@@ -1,0 +1,97 @@
+services:
+  # PostgreSQL with PgVector extension
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: infoseeker-postgres-prod
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-infoseeker}
+      POSTGRES_USER: ${POSTGRES_USER:-infoseeker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-infoseeker}
+      POSTGRES_HOST_AUTH_METHOD: md5
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-infoseeker} -d ${POSTGRES_DB:-infoseeker}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis for session management
+  redis:
+    image: redis:7-alpine
+    container_name: infoseeker-redis-prod
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data_prod:/data
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # InfoSeeker Backend
+  backend:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: infoseeker-backend-prod
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-infoseeker}:${POSTGRES_PASSWORD:-infoseeker}@postgres:5432/${POSTGRES_DB:-infoseeker}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-}@redis:6379/0
+      - DEBUG=false
+      - HOST=0.0.0.0
+      - PORT=8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend (React app)
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: infoseeker-frontend-prod
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:8000}
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # Nginx reverse proxy (optional)
+  nginx:
+    image: nginx:alpine
+    container_name: infoseeker-nginx-prod
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data_prod:
+  redis_data_prod:

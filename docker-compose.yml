@@ -1,0 +1,72 @@
+services:
+  # PostgreSQL with PgVector extension
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: infoseeker-postgres
+    environment:
+      POSTGRES_DB: infoseeker
+      POSTGRES_USER: infoseeker
+      POSTGRES_PASSWORD: infoseeker
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U infoseeker -d infoseeker"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for session management
+  redis:
+    image: redis:7-alpine
+    container_name: infoseeker-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # InfoSeeker Backend
+  backend:
+    build: .
+    container_name: infoseeker-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DATABASE_URL=postgresql+psycopg://infoseeker:infoseeker@postgres:5432/infoseeker
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/app:/app/app
+    restart: unless-stopped
+
+  # Frontend (React app)
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: infoseeker-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

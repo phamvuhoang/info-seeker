@@ -10,24 +10,58 @@ from .config import settings
 
 class VectorDatabaseManager:
     def __init__(self, db_url: str = None, table_name: str = None):
-        self.embedder = OpenAIEmbedder(
-            id=settings.embedding_model,
-            dimensions=settings.embedding_dimensions
-        )
+        self.db_url = db_url
+        self.table_name = table_name
+        self._vector_db = None
+        self._embedder = None
+        self._initialized = False
 
-        self.vector_db = PgVector(
-            table_name=table_name or settings.vector_table_name,
-            schema="public",  # Use public schema instead of ai schema
-            db_url=db_url or settings.database_url,
-            embedder=self.embedder,
-            search_type=SearchType.hybrid  # Combines semantic and keyword search
-        )
+    def _ensure_initialized(self):
+        """Lazy initialization of vector database components"""
+        if self._initialized:
+            return
 
-        # Initialize the table to ensure it exists
-        self._initialize_table()
+        try:
+            self._embedder = OpenAIEmbedder(
+                id=settings.embedding_model,
+                dimensions=settings.embedding_dimensions
+            )
+
+            # Fix database URL format for PgVector - use psycopg2 driver
+            fixed_db_url = (self.db_url or settings.database_url).replace('postgresql+psycopg://', 'postgresql+psycopg2://')
+
+            self._vector_db = PgVector(
+                table_name=self.table_name or settings.vector_table_name,
+                schema="public",  # Use public schema instead of ai schema
+                db_url=fixed_db_url,
+                embedder=self._embedder,
+                search_type=SearchType.hybrid  # Combines semantic and keyword search
+            )
+
+            # Initialize the table to ensure it exists
+            self._initialize_table()
+            self._initialized = True
+        except Exception as e:
+            print(f"Warning: Failed to initialize vector database: {e}")
+            self._initialized = False
+
+    @property
+    def vector_db(self):
+        """Get vector database instance with lazy initialization"""
+        self._ensure_initialized()
+        return self._vector_db
+
+    @property
+    def embedder(self):
+        """Get embedder instance with lazy initialization"""
+        self._ensure_initialized()
+        return self._embedder
 
     def _initialize_table(self):
         """Initialize the vector database table if it doesn't exist"""
+        if not self._vector_db:
+            return
+
         try:
             # Check if table exists by trying to count documents
             from agno.document import Document
@@ -35,7 +69,7 @@ class VectorDatabaseManager:
             # Try to search - if table doesn't exist, this will fail
             try:
                 # This will fail if table doesn't exist
-                list(self.vector_db.search("test", limit=1))
+                list(self._vector_db.search("test", limit=1))
                 print("Table already exists")
             except Exception:
                 print("Table doesn't exist, creating with dummy document...")
@@ -45,7 +79,7 @@ class VectorDatabaseManager:
                     content="Initialization document - can be ignored",
                     meta_data={"type": "initialization"}
                 )
-                self.vector_db.upsert([dummy_doc])
+                self._vector_db.upsert([dummy_doc])
                 print("Table created successfully")
         except Exception as e:
             print(f"Note: Table initialization error: {e}")
@@ -63,7 +97,8 @@ class VectorDatabaseManager:
         )
 
         # Use vector database directly
-        await self.vector_db.aupsert([document])
+        if self.vector_db:
+            await self.vector_db.aupsert([document])
         return content_hash
     
     async def index_web_results(self, search_results: List[Dict[str, Any]]) -> List[str]:
@@ -92,30 +127,84 @@ class VectorDatabaseManager:
             return []
 
         # Use vector database directly
-        await self.vector_db.aupsert(documents)
+        if self.vector_db:
+            await self.vector_db.aupsert(documents)
         return [doc.metadata['content_hash'] for doc in documents]
     
     async def search_similar(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Search for similar documents"""
         try:
-            # Use the correct async_search method from PgVector
-            results = await self.vector_db.async_search(query, limit=limit)
-            return [
-                {
-                    'content': result.content,
-                    'metadata': result.meta_data,
-                    'similarity_score': 1.0  # PgVector doesn't return similarity scores directly
-                }
-                for result in results
-            ]
+            # First try vector search if embeddings exist
+            if self.vector_db:
+                try:
+                    results = await self.vector_db.async_search(query, limit=limit)
+                    if results:
+                        return [
+                            {
+                                'content': result.content,
+                                'metadata': result.meta_data,
+                                'similarity_score': 0.9,  # High score for vector search
+                                'title': result.name or result.meta_data.get('title', 'Untitled') if result.meta_data else 'Untitled'
+                            }
+                            for result in results
+                        ]
+                except Exception as e:
+                    print(f"Vector search failed, falling back to text search: {e}")
+
+            # Fallback to text search
+            return await self._text_search(query, limit)
         except Exception as e:
             print(f"Error searching vector database: {e}")
-            # If the table doesn't exist or is empty, return empty results gracefully
+            return []
+
+    async def _text_search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Text search using SQL LIKE queries"""
+        try:
+            import psycopg
+
+            # Fix database URL format for psycopg
+            db_url = (self.db_url or settings.database_url).replace('postgresql+psycopg://', 'postgresql://')
+
+            conn = await psycopg.AsyncConnection.connect(db_url)
+
+            async with conn.cursor() as cursor:
+                # Simple text search using ILIKE for case-insensitive search
+                await cursor.execute(f"""
+                    SELECT content, meta_data, name
+                    FROM {self.table_name or settings.vector_table_name}
+                    WHERE content ILIKE %s OR name ILIKE %s
+                    ORDER BY
+                        CASE
+                            WHEN name ILIKE %s THEN 1
+                            WHEN content ILIKE %s THEN 2
+                            ELSE 3
+                        END
+                    LIMIT %s
+                """, (f'%{query}%', f'%{query}%', f'%{query}%', f'%{query}%', limit))
+
+                results = await cursor.fetchall()
+
+                formatted_results = []
+                for content, meta_data, name in results:
+                    formatted_results.append({
+                        'content': content,
+                        'metadata': meta_data,
+                        'similarity_score': 0.8,  # Default score for text search
+                        'title': name or meta_data.get('title', 'Untitled') if meta_data else 'Untitled'
+                    })
+
+                await conn.close()
+                return formatted_results
+
+        except Exception as e:
+            print(f"Error in text search: {e}")
             return []
     
     async def get_document_count(self) -> int:
         """Get total number of indexed documents"""
         try:
+            if not self.vector_db:
+                return 0
             # This is a simple implementation - in production you might want to use a proper count query
             results = await self.vector_db.asearch("", limit=1)
             return len(results) if results else 0

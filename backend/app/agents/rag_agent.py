@@ -80,9 +80,20 @@ class RAGAgent(BaseStreamingAgent):
             results = await self.vector_db.search_similar(query, limit=max_results)
             
             if not results:
+                # Broadcast completion with no results
+                if self.session_id:
+                    await progress_manager.broadcast_progress(
+                        self.session_id,
+                        {
+                            "agent": self.name,
+                            "status": "completed",
+                            "message": "No relevant documents found in knowledge base. Database is empty."
+                        }
+                    )
+
                 return {
                     "status": "no_results",
-                    "message": "No relevant information found in knowledge base",
+                    "message": "No relevant information found in knowledge base. Database is empty.",
                     "results": [],
                     "query": query
                 }
@@ -123,7 +134,7 @@ class RAGAgent(BaseStreamingAgent):
             
         except Exception as e:
             error_msg = f"Error searching knowledge base: {str(e)}"
-            
+
             if self.session_id:
                 await progress_manager.broadcast_progress(
                     self.session_id,
@@ -133,13 +144,15 @@ class RAGAgent(BaseStreamingAgent):
                         "message": error_msg
                     }
                 )
-            
+
             return {
                 "status": "error",
                 "message": error_msg,
                 "results": [],
                 "query": query
             }
+
+
     
     async def arun(self, message: str, **kwargs) -> Any:
         """Override arun to add progress tracking"""

@@ -41,11 +41,13 @@ class SearchProgressManager:
     async def get_message(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get the next message for a session (non-blocking)"""
         if session_id not in self.session_queues:
+            logger.warning(f"Session {session_id} not found in queues")
             return None
-        
+
         try:
             # Try to get a message without blocking
             message = self.session_queues[session_id].get_nowait()
+            logger.debug(f"Retrieved message for session {session_id}: {message.get('type', 'unknown')}")
             return message
         except asyncio.QueueEmpty:
             return None

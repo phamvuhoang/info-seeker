@@ -56,12 +56,12 @@ class SynthesisAgent(BaseStreamingAgent):
         
         self.session_id = session_id
     
-    async def synthesize_information(self, 
+    async def synthesize_information(self,
                                    query: str,
                                    rag_results: Dict[str, Any] = None,
                                    web_results: Dict[str, Any] = None) -> Dict[str, Any]:
         """Synthesize information from multiple sources"""
-        
+
         try:
             # Broadcast progress
             if self.session_id:
@@ -73,7 +73,7 @@ class SynthesisAgent(BaseStreamingAgent):
                         "message": "Synthesizing information from multiple sources..."
                     }
                 )
-            
+
             # Prepare synthesis context
             synthesis_context = self._prepare_synthesis_context(query, rag_results, web_results)
             

@@ -32,50 +32,65 @@ class WebSearchTools(Toolkit):
     
     async def _search_duckduckgo(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
         """Search using DuckDuckGo"""
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            
-            try:
-                # Navigate to DuckDuckGo
-                await page.goto("https://duckduckgo.com/", timeout=self.timeout)
-                
-                # Search
-                await page.fill('input[name="q"]', query)
-                await page.press('input[name="q"]', 'Enter')
-                
-                # Wait for results
-                await page.wait_for_selector('[data-testid="result"]', timeout=self.timeout)
-                
-                # Extract results
-                results = []
-                result_elements = await page.query_selector_all('[data-testid="result"]')
-                
-                for i, element in enumerate(result_elements[:max_results]):
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=['--no-sandbox', '--disable-dev-shm-usage']
+                )
+                page = await browser.new_page()
+
+                try:
+                    # Navigate to DuckDuckGo
+                    await page.goto("https://duckduckgo.com/", timeout=self.timeout)
+
+                    # Search
+                    await page.fill('input[name="q"]', query)
+                    await page.press('input[name="q"]', 'Enter')
+
+                    # Wait for results with shorter timeout and fallback
                     try:
-                        title_elem = await element.query_selector('h2 a')
-                        title = await title_elem.inner_text() if title_elem else "No title"
-                        url = await title_elem.get_attribute('href') if title_elem else ""
-                        
-                        snippet_elem = await element.query_selector('[data-result="snippet"]')
-                        snippet = await snippet_elem.inner_text() if snippet_elem else ""
-                        
-                        if title and url:
-                            results.append({
-                                "title": title.strip(),
-                                "url": url,
-                                "snippet": snippet.strip(),
-                                "source": "DuckDuckGo",
-                                "rank": i + 1
-                            })
+                        await page.wait_for_selector('[data-testid="result"]', timeout=10000)
                     except Exception:
-                        continue
-                
-                return results
-                
-            finally:
-                await browser.close()
+                        # Try alternative selector
+                        await page.wait_for_selector('.result', timeout=5000)
+
+                    # Extract results
+                    results = []
+                    result_elements = await page.query_selector_all('[data-testid="result"]')
+
+                    for i, element in enumerate(result_elements[:max_results]):
+                        try:
+                            title_elem = await element.query_selector('h2 a')
+                            title = await title_elem.inner_text() if title_elem else "No title"
+                            url = await title_elem.get_attribute('href') if title_elem else ""
+
+                            snippet_elem = await element.query_selector('[data-result="snippet"]')
+                            snippet = await snippet_elem.inner_text() if snippet_elem else ""
+
+                            if title and url:
+                                results.append({
+                                    "title": title.strip(),
+                                    "url": url,
+                                    "snippet": snippet.strip(),
+                                    "source": "DuckDuckGo",
+                                    "rank": i + 1
+                                })
+                        except Exception:
+                            continue
+
+                    return results
+
+                finally:
+                    await browser.close()
+
+        except Exception as e:
+            # Log the error and return empty results
+            print(f"Web search failed: {str(e)}")
+            raise e
     
+
+
     def _format_results(self, results: List[Dict[str, Any]], query: str) -> str:
         """Format search results for the agent"""
         if not results:

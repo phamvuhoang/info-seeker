@@ -33,29 +33,40 @@ app.add_middleware(
 @app.get("/sse/{session_id}")
 async def sse_endpoint(session_id: str):
     """Server-Sent Events endpoint for real-time search progress updates"""
+    logger.info(f"SSE connection requested for session: {session_id}")
 
     async def event_stream():
         # Register the session for SSE updates
         await progress_manager.connect(session_id)
+        logger.info(f"SSE session connected: {session_id}")
 
         try:
+            heartbeat_counter = 0
             while True:
                 # Check for new messages for this session
                 message = await progress_manager.get_message(session_id)
                 if message:
+                    logger.info(f"SSE sending message for {session_id}: {message.get('type', 'unknown')}")
                     # Format as SSE
                     yield f"data: {json.dumps(message)}\n\n"
+                    heartbeat_counter = 0  # Reset heartbeat counter when we send real data
                 else:
-                    # Send heartbeat to keep connection alive
-                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                    # Send heartbeat every 10 iterations (5 seconds) to keep connection alive
+                    heartbeat_counter += 1
+                    if heartbeat_counter >= 10:
+                        yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': asyncio.get_event_loop().time()})}\n\n"
+                        heartbeat_counter = 0
 
                 # Wait a bit before checking again
                 await asyncio.sleep(0.5)
 
+        except asyncio.CancelledError:
+            logger.info(f"SSE connection cancelled for session {session_id}")
         except Exception as e:
             logger.error(f"SSE error for session {session_id}: {e}")
         finally:
             progress_manager.disconnect(session_id)
+            logger.info(f"SSE session disconnected: {session_id}")
 
     return StreamingResponse(
         event_stream(),
@@ -64,7 +75,8 @@ async def sse_endpoint(session_id: str):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Cache-Control"
+            "Access-Control-Allow-Headers": "Cache-Control",
+            "Access-Control-Allow-Methods": "GET, OPTIONS"
         }
     )
 

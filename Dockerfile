@@ -4,7 +4,7 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including PostgreSQL dev headers for pgvector
 RUN apt-get update && apt-get install -y \
     curl \
     wget \
@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
     g++ \
+    libpq-dev \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Playwright dependencies

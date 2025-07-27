@@ -3,20 +3,24 @@
 -- Create the vector extension
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- Create documents table for vector storage
+-- Create enhanced documents table for vector storage
 CREATE TABLE IF NOT EXISTS infoseeker_documents (
     id SERIAL PRIMARY KEY,
     content TEXT NOT NULL,
-    metadata JSONB DEFAULT '{}',
-    embedding vector(1536),
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
+    metadata JSONB NOT NULL DEFAULT '{}',
+    embedding vector(3072),  -- text-embedding-3-large dimensions
+    content_hash VARCHAR(32) UNIQUE,
+    source_type VARCHAR(50) NOT NULL DEFAULT 'unknown',
+    indexed_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT unique_content_hash UNIQUE (content_hash)
 );
 
--- Create index for vector similarity search
-CREATE INDEX IF NOT EXISTS infoseeker_documents_embedding_idx 
-ON infoseeker_documents USING ivfflat (embedding vector_cosine_ops) 
-WITH (lists = 100);
+-- Create indexes for better performance
+CREATE INDEX IF NOT EXISTS idx_documents_embedding ON infoseeker_documents USING ivfflat (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_documents_source_type ON infoseeker_documents (source_type);
+CREATE INDEX IF NOT EXISTS idx_documents_metadata ON infoseeker_documents USING gin (metadata);
+CREATE INDEX IF NOT EXISTS idx_documents_indexed_at ON infoseeker_documents (indexed_at);
 
 -- Create user sessions table
 CREATE TABLE IF NOT EXISTS user_sessions (
@@ -35,6 +39,56 @@ CREATE TABLE IF NOT EXISTS source_scores (
     negative_feedback INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Agent workflow sessions
+CREATE TABLE IF NOT EXISTS agent_workflow_sessions (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(255) UNIQUE NOT NULL,
+    workflow_name VARCHAR(255) NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'running',
+    started_at TIMESTAMP DEFAULT NOW(),
+    completed_at TIMESTAMP,
+    metadata JSONB DEFAULT '{}',
+    result JSONB DEFAULT '{}'
+);
+
+-- Agent execution logs
+CREATE TABLE IF NOT EXISTS agent_execution_logs (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(255) NOT NULL,
+    agent_name VARCHAR(255) NOT NULL,
+    step_name VARCHAR(255),
+    status VARCHAR(50) NOT NULL,
+    started_at TIMESTAMP DEFAULT NOW(),
+    completed_at TIMESTAMP,
+    input_data JSONB DEFAULT '{}',
+    output_data JSONB DEFAULT '{}',
+    error_message TEXT,
+    execution_time_ms INTEGER,
+    FOREIGN KEY (session_id) REFERENCES agent_workflow_sessions(session_id)
+);
+
+-- Source reliability tracking
+CREATE TABLE IF NOT EXISTS source_reliability (
+    id SERIAL PRIMARY KEY,
+    domain VARCHAR(255) UNIQUE NOT NULL,
+    reliability_score FLOAT DEFAULT 0.5,
+    total_citations INTEGER DEFAULT 0,
+    positive_feedback INTEGER DEFAULT 0,
+    negative_feedback INTEGER DEFAULT 0,
+    last_updated TIMESTAMP DEFAULT NOW()
+);
+
+-- User feedback on search results
+CREATE TABLE IF NOT EXISTS search_feedback (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(255) NOT NULL,
+    query TEXT NOT NULL,
+    rating INTEGER CHECK (rating >= 1 AND rating <= 5),
+    feedback_text TEXT,
+    sources_helpful JSONB DEFAULT '[]',
+    created_at TIMESTAMP DEFAULT NOW()
 );
 
 -- Create search history table

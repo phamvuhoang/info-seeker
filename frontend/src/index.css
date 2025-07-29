@@ -33,3 +33,68 @@ code {
 ::-webkit-scrollbar-thumb:hover {
   background: #555;
 }
+
+/* Smooth transitions for expandable content */
+.expandable-content {
+  transition: max-height 0.3s ease-in-out, opacity 0.2s ease-in-out;
+}
+
+/* Auto-scroll indicator */
+.auto-scroll-active {
+  position: relative;
+}
+
+.auto-scroll-active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 4px;
+  height: 4px;
+  background: #3b82f6;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Better prose styling for agent results */
+.prose-agent-result {
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.prose-agent-result h1,
+.prose-agent-result h2,
+.prose-agent-result h3,
+.prose-agent-result h4,
+.prose-agent-result h5,
+.prose-agent-result h6 {
+  margin-top: 0.5rem;
+  margin-bottom: 0.25rem;
+  font-weight: 600;
+}
+
+.prose-agent-result p {
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.prose-agent-result ul,
+.prose-agent-result ol {
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+  padding-left: 1rem;
+}
+
+.prose-agent-result li {
+  margin-top: 0.125rem;
+  margin-bottom: 0.125rem;
+}

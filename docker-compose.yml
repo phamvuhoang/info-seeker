@@ -44,6 +44,7 @@ services:
       - DATABASE_URL=postgresql+psycopg://infoseeker:infoseeker@postgres:5432/infoseeker
       - REDIS_URL=redis://redis:6379/0
       - DEBUG=false
+      - PLAYWRIGHT_BROWSERS_PATH=/home/infoseeker/.cache/ms-playwright
     depends_on:
       postgres:
         condition: service_healthy
@@ -51,7 +52,14 @@ services:
         condition: service_healthy
     volumes:
       - ./backend/app:/app/app
+      - playwright_cache:/home/infoseeker/.cache/ms-playwright
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   # Frontend (React app)
   frontend:
@@ -70,3 +78,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  playwright_cache:

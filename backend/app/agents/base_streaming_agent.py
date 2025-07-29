@@ -32,12 +32,15 @@ class BaseStreamingAgent(Agent):
 
             # Run the agent (try streaming first, fallback to regular)
             try:
+                # Remove conflicting stream parameters from kwargs
+                clean_kwargs = {k: v for k, v in kwargs.items() if k not in ['stream', 'stream_intermediate_steps', 'show_full_reasoning']}
+
                 response_stream = await super().arun(
                     message,
                     stream=True,
                     stream_intermediate_steps=True,
                     show_full_reasoning=True,
-                    **kwargs
+                    **clean_kwargs
                 )
 
                 # Process streaming events and broadcast them
@@ -55,11 +58,13 @@ class BaseStreamingAgent(Agent):
                 # If no events were generated, fall back to regular execution
                 if event_count == 0:
                     logger.info(f"No streaming events generated for {self.name}, falling back to regular execution")
-                    final_response = await super().arun(message, **kwargs)
+                    final_response = await super().arun(message, **clean_kwargs)
 
             except Exception as stream_error:
                 logger.warning(f"Streaming failed for {self.name}, falling back to regular execution: {stream_error}")
-                final_response = await super().arun(message, **kwargs)
+                # Use clean kwargs for fallback as well
+                clean_kwargs = {k: v for k, v in kwargs.items() if k not in ['stream', 'stream_intermediate_steps', 'show_full_reasoning']}
+                final_response = await super().arun(message, **clean_kwargs)
 
             await self._broadcast_step("✅ Analysis complete!")
 

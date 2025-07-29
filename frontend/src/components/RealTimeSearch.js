@@ -8,7 +8,7 @@ import {
   getAgentStatusIcon,
   calculateProgress
 } from '../services/websocket';
-import { Search, Loader2, AlertCircle, CheckCircle, Clock } from 'lucide-react';
+import { Search, Loader2, AlertCircle, CheckCircle, Clock, ChevronDown, ChevronUp, Maximize2, Minimize2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
 const RealTimeSearch = () => {
@@ -22,10 +22,35 @@ const RealTimeSearch = () => {
   const [metadata, setMetadata] = useState(null);
   const [error, setError] = useState('');
   const [searchStartTime, setSearchStartTime] = useState(null);
+  const [expandedAgents, setExpandedAgents] = useState(new Set());
+  const [autoScroll, setAutoScroll] = useState(true);
   const wsRef = useRef(null);
+  const agentProgressRef = useRef(null);
+  const reasoningStepsRef = useRef(null);
 
   const initializeAgents = () => {
     setAgentProgress([...DEFAULT_AGENTS]);
+    setExpandedAgents(new Set());
+  };
+
+  const toggleAgentExpansion = (agentName) => {
+    setExpandedAgents(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(agentName)) {
+        newSet.delete(agentName);
+      } else {
+        newSet.add(agentName);
+      }
+      return newSet;
+    });
+  };
+
+  const scrollToBottom = (ref) => {
+    if (autoScroll && ref.current) {
+      setTimeout(() => {
+        ref.current.scrollTop = ref.current.scrollHeight;
+      }, 100);
+    }
   };
 
   const handleProgress = (update) => {
@@ -55,14 +80,22 @@ const RealTimeSearch = () => {
 
       // Add reasoning steps for detailed progress
       if (update.event_type === 'reasoning_step' || status === 'reasoning') {
-        setReasoningSteps(prev => [...prev, {
-          id: Date.now() + Math.random(),
-          agent: agentName,
-          message: message,
-          timestamp: timestamp || new Date().toISOString(),
-          type: 'reasoning'
-        }]);
+        setReasoningSteps(prev => {
+          const newSteps = [...prev, {
+            id: Date.now() + Math.random(),
+            agent: agentName,
+            message: message,
+            timestamp: timestamp || new Date().toISOString(),
+            type: 'reasoning'
+          }];
+          // Trigger auto-scroll for reasoning steps
+          setTimeout(() => scrollToBottom(reasoningStepsRef), 100);
+          return newSteps;
+        });
       }
+
+      // Trigger auto-scroll for agent progress
+      setTimeout(() => scrollToBottom(agentProgressRef), 100);
     }
   };
 
@@ -209,6 +242,16 @@ const RealTimeSearch = () => {
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold text-blue-900">Search Progress</h3>
             <div className="flex items-center gap-4 text-sm text-blue-700">
+              <button
+                onClick={() => setAutoScroll(!autoScroll)}
+                className={`flex items-center gap-1 px-2 py-1 rounded ${
+                  autoScroll ? 'bg-blue-200 text-blue-800' : 'bg-gray-200 text-gray-600'
+                }`}
+                title={autoScroll ? 'Disable auto-scroll' : 'Enable auto-scroll'}
+              >
+                {autoScroll ? <Minimize2 className="w-3 h-3" /> : <Maximize2 className="w-3 h-3" />}
+                Auto-scroll
+              </button>
               <div className="flex items-center gap-1">
                 <Clock className="w-4 h-4" />
                 {searchDuration}s
@@ -231,29 +274,75 @@ const RealTimeSearch = () => {
       {isSearching && agentProgress.length > 0 && (
         <div className="mb-8">
           <h3 className="text-lg font-semibold mb-4">Agent Activity</h3>
-          <div className="space-y-3">
-            {agentProgress.map((agent, index) => (
-              <div key={index} className="flex items-center gap-4 p-4 bg-gray-50 rounded-lg border">
-                <div className={`w-4 h-4 rounded-full flex items-center justify-center text-white text-xs font-bold ${getAgentStatusColor(agent.status)}`}>
-                  {getAgentStatusIcon(agent.status)}
-                </div>
-                <div className="flex-1">
-                  <div className="font-medium text-gray-900">{agent.name}</div>
-                  <div className="text-sm text-gray-600">{agent.message}</div>
-                  {agent.timestamp && (
-                    <div className="text-xs text-gray-400 mt-1">
-                      {new Date(agent.timestamp).toLocaleTimeString()}
+          <div
+            ref={agentProgressRef}
+            className={`space-y-3 max-h-96 overflow-y-auto ${autoScroll ? 'auto-scroll-active' : ''}`}
+            style={{ scrollBehavior: 'smooth' }}
+          >
+            {agentProgress.map((agent, index) => {
+              const isExpanded = expandedAgents.has(agent.name);
+              return (
+                <div key={index} className="p-4 bg-gray-50 rounded-lg border">
+                  <div className="flex items-center gap-4">
+                    <div className={`w-4 h-4 rounded-full flex items-center justify-center text-white text-xs font-bold ${getAgentStatusColor(agent.status)}`}>
+                      {getAgentStatusIcon(agent.status)}
                     </div>
-                  )}
+                    <div className="flex-1">
+                      <div className="font-medium text-gray-900">{agent.name}</div>
+                      <div className="text-sm text-gray-600">{agent.message}</div>
+                      {agent.timestamp && (
+                        <div className="text-xs text-gray-400 mt-1">
+                          {new Date(agent.timestamp).toLocaleTimeString()}
+                        </div>
+                      )}
+                    </div>
+                    {agent.result && (
+                      <button
+                        onClick={() => toggleAgentExpansion(agent.name)}
+                        className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
+                      >
+                        {isExpanded ? (
+                          <>
+                            <ChevronUp className="w-3 h-3" />
+                            Collapse
+                          </>
+                        ) : (
+                          <>
+                            <ChevronDown className="w-3 h-3" />
+                            Expand
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+
                   {agent.result && (
-                    <div className="text-sm text-gray-800 mt-2 p-3 bg-white rounded border">
-                      <div className="font-medium mb-1">Preview:</div>
-                      <div className="line-clamp-2">{agent.result}</div>
+                    <div className="mt-3 p-3 bg-white rounded border">
+                      <div className="font-medium mb-2 text-sm text-gray-700">Result:</div>
+                      <div className={`text-sm text-gray-800 expandable-content ${
+                        isExpanded
+                          ? 'max-h-none'
+                          : 'max-h-20 overflow-hidden'
+                      }`}>
+                        <ReactMarkdown className="prose-agent-result max-w-none">
+                          {agent.result}
+                        </ReactMarkdown>
+                      </div>
+                      {!isExpanded && agent.result.length > 100 && (
+                        <div className="mt-2">
+                          <button
+                            onClick={() => toggleAgentExpansion(agent.name)}
+                            className="text-xs text-blue-600 hover:text-blue-800"
+                          >
+                            Show more...
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -261,14 +350,23 @@ const RealTimeSearch = () => {
       {/* Reasoning Steps */}
       {isSearching && reasoningSteps.length > 0 && (
         <div className="mb-8">
-          <h3 className="text-lg font-semibold mb-4">Reasoning Process</h3>
-          <div className="space-y-2 max-h-64 overflow-y-auto">
-            {reasoningSteps.slice(-10).map((step) => (
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold">Reasoning Process</h3>
+            <div className="text-sm text-gray-600">
+              {reasoningSteps.length} steps
+            </div>
+          </div>
+          <div
+            ref={reasoningStepsRef}
+            className={`space-y-2 max-h-80 overflow-y-auto ${autoScroll ? 'auto-scroll-active' : ''}`}
+            style={{ scrollBehavior: 'smooth' }}
+          >
+            {reasoningSteps.slice(-20).map((step) => (
               <div key={step.id} className="flex items-start gap-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
                 <div className="w-2 h-2 bg-blue-500 rounded-full mt-2 flex-shrink-0"></div>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-blue-900">{step.agent}</div>
-                  <div className="text-sm text-blue-800">{step.message}</div>
+                  <div className="text-sm text-blue-800 break-words">{step.message}</div>
                   <div className="text-xs text-blue-600 mt-1">
                     {new Date(step.timestamp).toLocaleTimeString()}
                   </div>

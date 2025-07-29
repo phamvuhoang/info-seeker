@@ -116,12 +116,13 @@ class MultiAgentSearchTeam:
                 self.answer_agent
             ],
             instructions=[
-                "Work together to provide comprehensive, accurate answers.",
-                "Each agent contributes their specialized expertise.",
-                "Maintain context and build upon previous agent outputs.",
-                "Ensure high-quality, well-sourced final responses.",
-                "Coordinate efficiently to minimize response time.",
-                "Share information between agents as needed."
+                "First, search the knowledge base for relevant stored information using the RAG Specialist.",
+                "Then, search the web for current information using the Web Search Specialist.",
+                "Next, synthesize information from both sources using the Information Synthesizer.",
+                "Then, validate the synthesized information using the Information Validator.",
+                "Finally, generate a comprehensive answer using the Answer Generator.",
+                "Each agent should complete their task before the next agent begins.",
+                "Provide source attribution and maintain accuracy throughout."
             ],
             storage=storage,
             show_tool_calls=True,
@@ -129,115 +130,64 @@ class MultiAgentSearchTeam:
             markdown=True
         )
     
-    async def execute_hybrid_search(self, 
+    async def execute_hybrid_search(self,
                                   query: str,
                                   include_rag: bool = True,
                                   include_web: bool = True,
                                   max_results: int = 10) -> Dict[str, Any]:
         """Execute the multi-agent hybrid search workflow"""
-        
+
         try:
             # Initialize search session
             await self._initialize_search_session(query)
 
-            # Use the agno Team coordination instead of manual orchestration
+            # Simplified team coordination following agno best practices
+            # Let the team coordinate naturally without over-prescriptive instructions
             team_response = await self.team.arun(
-                message=f"""
-                Please coordinate the team to answer this query: {query}
-
-                Instructions:
-                1. First, ask the RAG Specialist to search the knowledge base for relevant information
-                2. Then, ask the Web Search Specialist to search for current information on the web
-                3. Next, ask the Information Synthesizer to combine the results from both searches
-                4. Then, ask the Information Validator to validate the synthesized information
-                5. Finally, ask the Answer Generator to create the final comprehensive answer
-
-                Make sure each agent completes their task before moving to the next one.
-                """,
+                message=f"Please provide a comprehensive answer to this query: {query}",
                 session_id=self.session_id
             )
 
-            # Extract actual results from team member runs
-            rag_results = {"status": "success", "results": [], "message": "No RAG results"}
-            web_results = {"status": "success", "results": [], "message": "No web results"}
-            synthesis_result = {"status": "success", "synthesis": team_response.content}
-
             # Extract sources from team member runs if available
             all_sources = []
+            agents_used = []
+
             if hasattr(team_response, 'member_runs') and team_response.member_runs:
                 for member_run in team_response.member_runs:
                     if hasattr(member_run, 'agent') and member_run.agent:
                         agent_name = member_run.agent.name
-                        if "RAG" in agent_name and hasattr(member_run, 'messages'):
-                            # Try to extract RAG sources from the agent's response
+                        agents_used.append(agent_name)
+
+                        # Extract any sources from agent responses
+                        if hasattr(member_run, 'messages'):
                             for message in member_run.messages:
-                                if hasattr(message, 'content') and "found" in message.content.lower():
-                                    # Mock RAG results based on our test data
-                                    rag_results = {
-                                        "status": "success",
-                                        "results": [
-                                            {"title": "Ho Chi Minh City Overview", "content": "HCMC information", "similarity_score": 0.8},
-                                            {"title": "Top 5 HCMC Tourist Spots", "content": "Tourist attractions", "similarity_score": 0.7}
-                                        ],
-                                        "message": "Found documents in knowledge base"
-                                    }
-                                    all_sources.extend(rag_results["results"])
-                        elif "Web" in agent_name and hasattr(member_run, 'messages'):
-                            # Try to extract web sources
-                            for message in member_run.messages:
-                                if hasattr(message, 'content') and "search" in message.content.lower():
-                                    # Mock web results
-                                    web_results = {
-                                        "status": "success",
-                                        "results": [
-                                            {"title": "Current HCMC Info", "url": "https://example.com", "relevance_score": 0.9}
-                                        ],
-                                        "message": "Found web results"
-                                    }
-                                    all_sources.extend(web_results["results"])
+                                if hasattr(message, 'content'):
+                                    # Simple source extraction - look for URLs or structured data
+                                    content = message.content
+                                    if "http" in content:
+                                        # Extract URLs as sources
+                                        import re
+                                        urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', content)
+                                        for url in urls:
+                                            all_sources.append({
+                                                "title": f"Source from {agent_name}",
+                                                "url": url,
+                                                "agent": agent_name,
+                                                "relevance_score": 0.8
+                                            })
             
-            # Step 4: Information Validation
-            all_sources = []
-            if rag_results and rag_results.get("results"):
-                all_sources.extend(rag_results["results"])
-            if web_results and web_results.get("results"):
-                all_sources.extend(web_results["results"])
-            
-            validation_result = await self.validation_agent.validate_information(
-                synthesis_result.get("synthesis", ""),
-                all_sources,
-                query
-            )
-            
-            # Step 5: Final Answer Generation
-            answer_result = await self.answer_agent.generate_final_answer(
-                query,
-                synthesis_result.get("synthesis", ""),
-                validation_result,
-                all_sources
-            )
-            
-            # Compile final result
+            # Compile final result - simplified and focused on actual team output
             final_result = {
                 "query": query,
-                "answer": answer_result.get("answer", ""),
+                "answer": team_response.content,
                 "sources": all_sources,
                 "metadata": {
-                    "agents_used": self._get_agents_used(include_rag, include_web),
-                    "rag_results_count": len(rag_results.get("results", [])) if rag_results else 0,
-                    "web_results_count": len(web_results.get("results", [])) if web_results else 0,
+                    "agents_used": agents_used if agents_used else ["InfoSeeker Search Team"],
                     "total_sources": len(all_sources),
-                    "confidence_score": validation_result.get("analysis", {}).get("confidence_score", 0.7),
-                    "quality_score": answer_result.get("analysis", {}).get("quality_score", 0.7),
-                    "processing_time": "calculated_time",  # Would calculate actual time
-                    "session_id": self.session_id
-                },
-                "workflow_details": {
-                    "rag_search": rag_results,
-                    "web_search": web_results,
-                    "synthesis": synthesis_result,
-                    "validation": validation_result,
-                    "answer_generation": answer_result
+                    "session_id": self.session_id,
+                    "include_rag": include_rag,
+                    "include_web": include_web,
+                    "max_results": max_results
                 }
             }
             

@@ -503,9 +503,16 @@ class MultiAgentSearchTeam:
                 else:
                     # Fallback to simple URL extraction from content
                     import re
-                    urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+',
+                    # Fixed regex pattern that doesn't include trailing punctuation
+                    urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|(?:%[0-9a-fA-F][0-9a-fA-F]))+(?=[^\w]|$)',
                                     result.content)
+                    # Clean up URLs by removing trailing punctuation
+                    cleaned_urls = []
                     for url in urls:
+                        # Remove trailing punctuation like ), ., etc.
+                        url = re.sub(r'[)\].,;!?]+$', '', url)
+                        cleaned_urls.append(url)
+                    for url in cleaned_urls:
                         all_sources.append({
                             "title": f"Source from search",
                             "url": url,

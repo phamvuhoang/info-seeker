@@ -32,24 +32,30 @@ class Settings(BaseSettings):
     max_chunk_size: int = 1000
     chunk_overlap: int = 200
 
-    # Multi-agent settings
-    max_concurrent_agents: int = 5
-    agent_timeout_seconds: int = 300
-    workflow_timeout_seconds: int = 600
+    # Multi-agent settings - Optimized for performance
+    max_concurrent_agents: int = 3  # Reduced for better performance
+    agent_timeout_seconds: int = 60  # Reduced timeout
+    workflow_timeout_seconds: int = 120  # Reduced workflow timeout
 
     # WebSocket settings
     websocket_heartbeat_interval: int = 30
     max_websocket_connections: int = 100
 
-    # Search settings
-    max_rag_results: int = 10
-    max_web_results: int = 10
+    # Search settings - Optimized for speed
+    max_rag_results: int = 5  # Reduced for faster processing
+    max_web_results: int = 5  # Reduced for faster processing
     hybrid_search_weight_rag: float = 0.6
     hybrid_search_weight_web: float = 0.4
 
     # Performance settings
     redis_cache_ttl: int = 3600  # 1 hour
     vector_search_cache_ttl: int = 1800  # 30 minutes
+
+    # Connection settings
+    http_connection_pool_size: int = 100
+    http_connection_timeout: int = 30
+    database_pool_size: int = 20
+    database_pool_timeout: int = 30
 
     # Server Configuration
     host: str = "0.0.0.0"

@@ -9,81 +9,44 @@ logger = logging.getLogger(__name__)
 
 
 class BaseStreamingAgent(Agent):
-    """Base agent class that provides streaming capabilities for detailed progress tracking"""
+    """Optimized base agent class with reduced streaming overhead"""
 
     def __init__(self, session_id: str = None, *args, **kwargs):
-        # Enable reasoning for detailed streaming events
-        kwargs.setdefault('reasoning', True)
+        # Reduce overhead by disabling excessive reasoning
+        kwargs.setdefault('reasoning', False)
         kwargs.setdefault('markdown', True)
         super().__init__(*args, **kwargs)
         self.session_id = session_id
     
     async def arun_with_streaming(self, message: str, **kwargs) -> Any:
-        """Run agent with streaming enabled and provide detailed step-by-step updates"""
+        """Optimized agent execution with minimal overhead"""
         try:
-            # Send detailed processing steps
-            await self._broadcast_step("🤔 Analyzing your request...")
-            await asyncio.sleep(0.5)  # Small delay for UX
+            # Simplified execution without excessive delays
+            await self._broadcast_step("Processing request...")
 
-            await self._broadcast_step("🧠 Applying reasoning and domain knowledge...")
-            await asyncio.sleep(0.5)
+            # Run the agent directly without streaming overhead
+            clean_kwargs = {k: v for k, v in kwargs.items()
+                          if k not in ['stream', 'stream_intermediate_steps', 'show_full_reasoning']}
 
-            await self._broadcast_step("⚡ Processing with AI model...")
+            final_response = await super().arun(message, **clean_kwargs)
 
-            # Run the agent (try streaming first, fallback to regular)
-            try:
-                # Remove conflicting stream parameters from kwargs
-                clean_kwargs = {k: v for k, v in kwargs.items() if k not in ['stream', 'stream_intermediate_steps', 'show_full_reasoning']}
-
-                response_stream = await super().arun(
-                    message,
-                    stream=True,
-                    stream_intermediate_steps=True,
-                    show_full_reasoning=True,
-                    **clean_kwargs
-                )
-
-                # Process streaming events and broadcast them
-                final_response = None
-                event_count = 0
-                async for event in response_stream:
-                    event_count += 1
-                    if self.session_id:
-                        await self._broadcast_agent_event(event)
-
-                    # Capture the final response
-                    if hasattr(event, 'event') and event.event == "RunCompleted":
-                        final_response = event
-
-                # If no events were generated, fall back to regular execution
-                if event_count == 0:
-                    logger.info(f"No streaming events generated for {self.name}, falling back to regular execution")
-                    final_response = await super().arun(message, **clean_kwargs)
-
-            except Exception as stream_error:
-                logger.warning(f"Streaming failed for {self.name}, falling back to regular execution: {stream_error}")
-                # Use clean kwargs for fallback as well
-                clean_kwargs = {k: v for k, v in kwargs.items() if k not in ['stream', 'stream_intermediate_steps', 'show_full_reasoning']}
-                final_response = await super().arun(message, **clean_kwargs)
-
-            await self._broadcast_step("✅ Analysis complete!")
+            await self._broadcast_step("Processing complete!")
 
             return final_response
 
         except Exception as e:
-            logger.error(f"Error in streaming agent {self.name}: {e}")
+            logger.error(f"Error in agent {self.name}: {e}")
             raise e
 
     async def _broadcast_step(self, step_message: str):
-        """Broadcast a reasoning step"""
+        """Optimized step broadcasting with reduced frequency"""
         if self.session_id:
             await progress_manager.broadcast_progress(
                 self.session_id,
                 {
                     "agent": self.name,
-                    "status": "reasoning",
+                    "status": "processing",
                     "message": step_message,
-                    "event_type": "reasoning_step",
                     "timestamp": datetime.now().isoformat()
                 }
             )

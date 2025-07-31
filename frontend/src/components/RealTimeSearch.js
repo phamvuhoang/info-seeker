@@ -64,38 +64,50 @@ const RealTimeSearch = () => {
     const timestamp = update.timestamp || update.data?.timestamp;
 
     if (agentName) {
-      setAgentProgress(prev =>
-        prev.map(agent =>
+      // Batch state updates for better performance
+      setAgentProgress(prev => {
+        const updated = prev.map(agent =>
           agent.name === agentName
             ? {
                 ...agent,
                 status: status || agent.status,
                 message: message || agent.message,
                 result: result,
-                timestamp: timestamp
+                timestamp: timestamp,
+                lastUpdated: Date.now()
               }
             : agent
-        )
-      );
+        );
+        return updated;
+      });
 
-      // Add reasoning steps for detailed progress
-      if (update.event_type === 'reasoning_step' || status === 'reasoning') {
+      // Only add reasoning steps for important status changes
+      if (status === 'started' || status === 'completed' || status === 'failed') {
         setReasoningSteps(prev => {
           const newSteps = [...prev, {
             id: Date.now() + Math.random(),
             agent: agentName,
             message: message,
             timestamp: timestamp || new Date().toISOString(),
-            type: 'reasoning'
+            type: status,
+            important: true
           }];
-          // Trigger auto-scroll for reasoning steps
-          setTimeout(() => scrollToBottom(reasoningStepsRef), 100);
-          return newSteps;
+
+          // Limit reasoning steps to prevent memory issues
+          const limitedSteps = newSteps.slice(-50);
+
+          // Debounced auto-scroll
+          if (autoScroll) {
+            setTimeout(() => scrollToBottom(reasoningStepsRef), 200);
+          }
+          return limitedSteps;
         });
       }
 
-      // Trigger auto-scroll for agent progress
-      setTimeout(() => scrollToBottom(agentProgressRef), 100);
+      // Debounced auto-scroll for agent progress
+      if (autoScroll) {
+        setTimeout(() => scrollToBottom(agentProgressRef), 200);
+      }
     }
   };
 
@@ -347,27 +359,47 @@ const RealTimeSearch = () => {
         </div>
       )}
 
-      {/* Reasoning Steps */}
+      {/* Activity Timeline - Optimized */}
       {isSearching && reasoningSteps.length > 0 && (
         <div className="mb-8">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold">Reasoning Process</h3>
+            <h3 className="text-lg font-semibold">Activity Timeline</h3>
             <div className="text-sm text-gray-600">
-              {reasoningSteps.length} steps
+              {reasoningSteps.filter(step => step.important).length} key events
             </div>
           </div>
           <div
             ref={reasoningStepsRef}
-            className={`space-y-2 max-h-80 overflow-y-auto ${autoScroll ? 'auto-scroll-active' : ''}`}
+            className={`space-y-2 max-h-60 overflow-y-auto ${autoScroll ? 'auto-scroll-active' : ''}`}
             style={{ scrollBehavior: 'smooth' }}
           >
-            {reasoningSteps.slice(-20).map((step) => (
-              <div key={step.id} className="flex items-start gap-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
-                <div className="w-2 h-2 bg-blue-500 rounded-full mt-2 flex-shrink-0"></div>
+            {reasoningSteps.filter(step => step.important).slice(-15).map((step) => (
+              <div key={step.id} className={`flex items-start gap-3 p-3 rounded-lg border ${
+                step.type === 'completed' ? 'bg-green-50 border-green-200' :
+                step.type === 'failed' ? 'bg-red-50 border-red-200' :
+                'bg-blue-50 border-blue-200'
+              }`}>
+                <div className={`w-2 h-2 rounded-full mt-2 flex-shrink-0 ${
+                  step.type === 'completed' ? 'bg-green-500' :
+                  step.type === 'failed' ? 'bg-red-500' :
+                  'bg-blue-500'
+                }`}></div>
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-blue-900">{step.agent}</div>
-                  <div className="text-sm text-blue-800 break-words">{step.message}</div>
-                  <div className="text-xs text-blue-600 mt-1">
+                  <div className={`text-sm font-medium ${
+                    step.type === 'completed' ? 'text-green-900' :
+                    step.type === 'failed' ? 'text-red-900' :
+                    'text-blue-900'
+                  }`}>{step.agent}</div>
+                  <div className={`text-sm break-words ${
+                    step.type === 'completed' ? 'text-green-800' :
+                    step.type === 'failed' ? 'text-red-800' :
+                    'text-blue-800'
+                  }`}>{step.message}</div>
+                  <div className={`text-xs mt-1 ${
+                    step.type === 'completed' ? 'text-green-600' :
+                    step.type === 'failed' ? 'text-red-600' :
+                    'text-blue-600'
+                  }`}>
                     {new Date(step.timestamp).toLocaleTimeString()}
                   </div>
                 </div>

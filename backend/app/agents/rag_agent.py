@@ -155,47 +155,41 @@ class RAGAgent(BaseStreamingAgent):
 
     
     async def arun(self, message: str, **kwargs) -> Any:
-        """Override arun to add progress tracking"""
+        """Optimized RAG agent execution"""
         try:
-            # Send start notification
+            # Simplified progress tracking
             if self.session_id:
                 await progress_manager.broadcast_progress(
                     self.session_id,
                     {
                         "agent": self.name,
                         "status": "started",
-                        "message": f"RAG Specialist is analyzing your query..."
+                        "message": "RAG Specialist searching knowledge base..."
                     }
                 )
-            
-            # Detailed step-by-step reasoning
-            await self._broadcast_step("🔍 Analyzing query for relevant knowledge...")
-            await asyncio.sleep(0.3)
 
-            await self._broadcast_step("📚 Searching through document embeddings...")
-            # First search the knowledge base
+            # Search the knowledge base efficiently
             search_results = await self.search_knowledge_base(message)
 
-            await self._broadcast_step(f"📄 Found {len(search_results.get('results', []))} relevant documents")
-            await asyncio.sleep(0.2)
-            
             # Prepare context for the agent
             if search_results["status"] == "success" and search_results["results"]:
                 context = "Based on the knowledge base search, here are the relevant documents:\n\n"
-                for i, result in enumerate(search_results["results"][:5], 1):
+                for i, result in enumerate(search_results["results"][:3], 1):  # Limit to top 3 for performance
                     context += f"{i}. **{result['title']}** (Similarity: {result['similarity_score']:.2f})\n"
-                    context += f"   Content: {result['content'][:200]}...\n"
+                    context += f"   Content: {result['content'][:150]}...\n"  # Shorter content for faster processing
                     if result['url']:
                         context += f"   Source: {result['url']}\n"
                     context += "\n"
-                
+
                 enhanced_message = f"{message}\n\nKnowledge Base Context:\n{context}"
             else:
                 enhanced_message = f"{message}\n\nNote: No relevant information found in the knowledge base."
-            
-            # Run the agent with streaming enabled to capture detailed events
-            final_response = await self.arun_with_streaming(enhanced_message, **kwargs)
-            
+
+            # Run the agent directly without streaming overhead
+            clean_kwargs = {k: v for k, v in kwargs.items()
+                          if k not in ['stream', 'stream_intermediate_steps', 'show_full_reasoning']}
+            final_response = await super().arun(enhanced_message, **clean_kwargs)
+
             # Send completion notification
             if self.session_id:
                 await progress_manager.broadcast_progress(
@@ -204,15 +198,15 @@ class RAGAgent(BaseStreamingAgent):
                         "agent": self.name,
                         "status": "completed",
                         "message": f"RAG analysis completed. Found {len(search_results.get('results', []))} relevant documents.",
-                        "result_preview": final_response.content[:200] + "..." if final_response and final_response.content and len(final_response.content) > 200 else (final_response.content if final_response and final_response.content else "Analysis completed")
+                        "result_preview": final_response.content[:100] + "..." if final_response and final_response.content and len(final_response.content) > 100 else (final_response.content if final_response and final_response.content else "Analysis completed")
                     }
                 )
 
             return final_response
-            
+
         except Exception as e:
             error_msg = f"RAG Agent error: {str(e)}"
-            
+
             if self.session_id:
                 await progress_manager.broadcast_progress(
                     self.session_id,
@@ -222,7 +216,7 @@ class RAGAgent(BaseStreamingAgent):
                         "message": error_msg
                     }
                 )
-            
+
             raise e
 
 

@@ -158,7 +158,8 @@ class VectorDatabaseManager:
             return []
 
     async def _text_search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Text search using SQL LIKE queries"""
+        """Text search using SQL LIKE queries with proper connection management"""
+        conn = None
         try:
             import psycopg
 
@@ -193,12 +194,18 @@ class VectorDatabaseManager:
                         'title': name or meta_data.get('title', 'Untitled') if meta_data else 'Untitled'
                     })
 
-                await conn.close()
                 return formatted_results
 
         except Exception as e:
             print(f"Error in text search: {e}")
             return []
+        finally:
+            # Ensure connection is properly closed
+            if conn:
+                try:
+                    await conn.close()
+                except Exception as e:
+                    print(f"Error closing database connection: {e}")
     
     async def get_document_count(self) -> int:
         """Get total number of indexed documents"""

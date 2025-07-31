@@ -12,6 +12,8 @@ class SearchProgressManager:
         self.active_sessions: Dict[str, bool] = {}
         self.session_queues: Dict[str, asyncio.Queue] = {}
         self.session_data: Dict[str, Dict[str, Any]] = {}
+        self.last_message_time: Dict[str, float] = {}
+        self.message_throttle_interval = 0.5  # Minimum 0.5 seconds between messages
     
     async def connect(self, session_id: str):
         """Connect a session for SSE updates"""
@@ -53,21 +55,34 @@ class SearchProgressManager:
             return None
     
     async def broadcast_progress(self, session_id: str, progress_data: Dict[str, Any]):
-        """Broadcast progress update to a specific session"""
+        """Broadcast progress update with throttling to prevent spam"""
         if session_id not in self.active_sessions:
             logger.warning(f"No active SSE connection for session {session_id}")
             return
-        
+
+        # Throttle messages to prevent overwhelming the frontend
+        import time
+        current_time = time.time()
+        last_time = self.last_message_time.get(session_id, 0)
+
+        # Skip non-critical messages if sent too frequently
+        if (current_time - last_time) < self.message_throttle_interval:
+            status = progress_data.get('status', '')
+            # Only allow critical status updates through throttling
+            if status not in ['started', 'completed', 'failed']:
+                return
+
         try:
             # Add timestamp
             progress_data['timestamp'] = datetime.now(timezone.utc).isoformat()
             progress_data['type'] = 'progress_update'
-            
+
             # Add to queue
             if session_id in self.session_queues:
                 await self.session_queues[session_id].put(progress_data)
+                self.last_message_time[session_id] = current_time
                 logger.info(f"Broadcasting progress for session {session_id}: {progress_data.get('agent', 'Unknown')} - {progress_data.get('status', 'Unknown')}")
-            
+
         except Exception as e:
             logger.error(f"Error broadcasting progress for session {session_id}: {e}")
     

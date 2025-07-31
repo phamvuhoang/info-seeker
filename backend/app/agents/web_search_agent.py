@@ -34,8 +34,8 @@ class WebSearchAgent(BaseStreamingAgent):
                 print(f"Warning: Failed to configure Redis storage: {e}")
                 storage = None
 
-        # Initialize DuckDuckGo tools
-        ddg_tools = DuckDuckGoTools(search=True, news=True, fixed_max_results=10)
+        # Initialize DuckDuckGo tools with optimized settings
+        ddg_tools = DuckDuckGoTools(search=True, news=True, fixed_max_results=5)  # Reduced for performance
 
         super().__init__(
             name="Web Search Specialist",
@@ -46,12 +46,12 @@ class WebSearchAgent(BaseStreamingAgent):
             description="Web search specialist for current information",
             instructions=[
                 "You are the web search specialist for InfoSeeker.",
-                "Use DuckDuckGo search and news tools to find the latest, most relevant information.",
-                "Extract specific search keywords from user requests.",
-                "Search for current news and information using relevant keywords.",
-                "Provide source URLs and publication information.",
+                "Use DuckDuckGo search to find the most relevant information quickly.",
+                "Extract key search terms from user requests.",
+                "Search for current information using relevant keywords.",
+                "Provide concise summaries with source URLs.",
                 "Focus on factual, up-to-date information.",
-                "Always include sources in your responses."
+                "Be efficient and provide results quickly."
             ],
             tools=[ddg_tools],
             storage=storage,

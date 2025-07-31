@@ -3,22 +3,40 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from .api import health, search
 from .core.config import settings
+from .core.connection_manager import cleanup_connections
 from .services.sse_manager import progress_manager
 import logging
 import json
 import asyncio
+import atexit
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app
+# Create FastAPI app with lifecycle events
 app = FastAPI(
     title=settings.app_name,
     description="InfoSeeker - AI-powered search platform for junk-free, personalized information retrieval",
     version=settings.app_version,
     debug=settings.debug
 )
+
+# Add startup and shutdown events for proper resource management
+@app.on_event("startup")
+async def startup_event():
+    """Initialize resources on startup"""
+    logger.info("InfoSeeker backend starting up...")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup resources on shutdown"""
+    logger.info("InfoSeeker backend shutting down...")
+    await cleanup_connections()
+    logger.info("Cleanup completed")
+
+# Register cleanup function for process termination
+atexit.register(lambda: asyncio.run(cleanup_connections()))
 
 # Add CORS middleware
 app.add_middleware(

@@ -4,7 +4,7 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including PostgreSQL dev headers for pgvector
 RUN apt-get update && apt-get install -y \
     curl \
     wget \
@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
     g++ \
+    libpq-dev \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Playwright dependencies
@@ -24,23 +26,40 @@ RUN apt-get update && apt-get install -y \
     libgtk-3-0 \
     libgbm1 \
     libasound2 \
+    libxss1 \
+    libgconf-2-4 \
+    libxrandr2 \
+    libasound2 \
+    libpangocairo-1.0-0 \
+    libatk1.0-0 \
+    libcairo-gobject2 \
+    libgtk-3-0 \
+    libgdk-pixbuf2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
 COPY backend/requirements.txt .
 
+# Create non-root user first
+RUN useradd -m -u 1000 infoseeker
+
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Install Playwright browsers
-RUN playwright install chromium
 
 # Copy application code
 COPY backend/app ./app
 
-# Create non-root user
-RUN useradd -m -u 1000 infoseeker && chown -R infoseeker:infoseeker /app
+# Change ownership of app directory
+RUN chown -R infoseeker:infoseeker /app
+
+# Switch to non-root user
 USER infoseeker
+
+# Install Playwright browsers as the infoseeker user
+RUN playwright install chromium
+
+# Set environment variables for Playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/infoseeker/.cache/ms-playwright
 
 # Expose port
 EXPOSE 8000

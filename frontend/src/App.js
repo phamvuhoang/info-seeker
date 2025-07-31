@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import SearchPage from './components/SearchPage';
+import RealTimeSearch from './components/RealTimeSearch';
 import Header from './components/Header';
 import Footer from './components/Footer';
 
@@ -11,8 +12,9 @@ function App() {
         <Header />
         <main className="flex-1">
           <Routes>
-            <Route path="/" element={<SearchPage />} />
+            <Route path="/" element={<RealTimeSearch />} />
             <Route path="/search" element={<SearchPage />} />
+            <Route path="/hybrid" element={<RealTimeSearch />} />
           </Routes>
         </main>
         <Footer />

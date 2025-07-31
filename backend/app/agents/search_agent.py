@@ -20,6 +20,7 @@ def create_search_agent(session_id: str = None) -> Agent:
             db = int(redis_parts[1]) if len(redis_parts) > 1 else 0
 
             storage = RedisStorage(
+                prefix="infoseeker_search",
                 host=host,
                 port=port,
                 db=db

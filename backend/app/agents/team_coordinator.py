@@ -17,6 +17,9 @@ from .web_search_agent import create_web_search_agent
 from .synthesis_agent import create_synthesis_agent
 from .validation_agent import create_validation_agent
 from .answer_agent import create_answer_agent
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class MultiAgentSearchTeam:
@@ -222,49 +225,113 @@ class MultiAgentSearchTeam:
                 else:
                     combined_context = f"Query: {query}\n\nNo search sources enabled."
 
-                # Run synthesis, validation, and answer generation in sequence (they depend on each other)
-                synthesis_result = await self._run_agent_with_progress(
-                    self.synthesis_agent, combined_context, "Information Synthesizer")
-
-                validation_result = await self._run_agent_with_progress(
-                    self.validation_agent, synthesis_result.content if synthesis_result else combined_context,
-                    "Information Validator")
-
-                final_answer = await self._run_agent_with_progress(
-                    self.answer_agent, validation_result.content if validation_result else combined_context,
-                    "Answer Generator")
-
-                # Extract sources and compile final result
+                # Extract sources first (needed for validation)
                 all_sources = self._extract_sources_from_results([
                     rag_result if include_rag else None,
                     web_result if include_web else None
                 ])
 
+                # Run synthesis, validation, and answer generation in sequence (they depend on each other)
+                logger.info("DEBUG: About to run synthesis agent")
+                synthesis_result = await self._run_agent_with_progress(
+                    self.synthesis_agent, combined_context, "Information Synthesizer")
+                logger.info("DEBUG: Synthesis completed, about to run validation")
+
+                # Use the validation agent's specialized method instead of generic arun
+                await self._broadcast_progress("Information Validator", "started", "Information Validator is processing...")
+                try:
+                    logger.info(f"DEBUG: Calling validation agent with {len(all_sources)} sources")
+                    validation_result = await self.validation_agent.validate_information(
+                        synthesis=synthesis_result.content if synthesis_result else combined_context,
+                        sources=all_sources,
+                        query=query
+                    )
+                    logger.info(f"DEBUG: Validation result type: {type(validation_result)}")
+                    logger.info(f"DEBUG: Validation result keys: {validation_result.keys() if isinstance(validation_result, dict) else 'Not a dict'}")
+                    if isinstance(validation_result, dict) and "analysis" in validation_result:
+                        logger.info(f"DEBUG: Analysis confidence: {validation_result['analysis'].get('confidence_score', 'Not found')}")
+                    await self._broadcast_progress("Information Validator", "completed", "Information Validator completed successfully")
+                    logger.info("DEBUG: Validation completed successfully")
+                except Exception as e:
+                    logger.error(f"DEBUG: Validation error: {e}")
+                    await self._broadcast_progress("Information Validator", "failed", f"Information Validator failed: {str(e)}")
+                    raise e
+
+                logger.info("DEBUG: About to prepare answer context")
+
+                # Prepare context for answer generation including validation results
+                answer_context = combined_context
+                if validation_result and isinstance(validation_result, dict):
+                    if "validation_report" in validation_result:
+                        answer_context += f"\n\nValidation Report:\n{validation_result['validation_report']}"
+                elif validation_result and hasattr(validation_result, 'content'):
+                    answer_context += f"\n\nValidation Report:\n{validation_result.content}"
+
+                final_answer = await self._run_agent_with_progress(
+                    self.answer_agent, answer_context, "Answer Generator")
+
+                # Sources already extracted earlier for validation
+
                 processing_time = time.time() - self.start_time
 
                 # Extract confidence and quality scores from validation and answer results
-                confidence_score = 0.7  # Default
-                quality_score = 0.7     # Default
+                confidence_score = None  # No default - must be calculated
+                quality_score = None     # No default - must be calculated
 
-                # Get confidence from validation result
-                if validation_result and hasattr(validation_result, 'content'):
-                    try:
-                        # Try to extract confidence from validation content
-                        import re
-                        confidence_match = re.search(r'confidence[:\s]+([0-9]*\.?[0-9]+)', validation_result.content.lower())
-                        if confidence_match:
-                            confidence_score = min(max(float(confidence_match.group(1)), 0.1), 0.95)
-                    except:
-                        pass
+                # Get confidence from validation result - access the actual analysis
+                if validation_result:
+                    # Check if validation_result is a dict with analysis
+                    if isinstance(validation_result, dict) and "analysis" in validation_result:
+                        confidence_score = validation_result["analysis"].get("confidence_score")
+                        print(f"Got confidence from validation analysis (dict): {confidence_score}")
+                    # Check if validation_result has analysis attribute
+                    elif hasattr(validation_result, 'analysis') and validation_result.analysis:
+                        confidence_score = validation_result.analysis.get("confidence_score")
+                        print(f"Got confidence from validation analysis (attr): {confidence_score}")
+                    # Fallback: try to extract from content if analysis not available
+                    elif hasattr(validation_result, 'content'):
+                        try:
+                            import re
+                            confidence_match = re.search(r'confidence[:\s]+([0-9]*\.?[0-9]+)', validation_result.content.lower())
+                            if confidence_match:
+                                confidence_score = min(max(float(confidence_match.group(1)), 0.1), 0.95)
+                                print(f"Extracted confidence from content: {confidence_score}")
+                        except Exception as e:
+                            print(f"Error extracting confidence from content: {e}")
+                    # Check if it's a dict with content
+                    elif isinstance(validation_result, dict) and "validation_report" in validation_result:
+                        try:
+                            import re
+                            content = validation_result["validation_report"].lower()
+                            confidence_match = re.search(r'confidence[:\s]+([0-9]*\.?[0-9]+)', content)
+                            if confidence_match:
+                                confidence_score = min(max(float(confidence_match.group(1)), 0.1), 0.95)
+                                print(f"Extracted confidence from dict content: {confidence_score}")
+                        except Exception as e:
+                            print(f"Error extracting confidence from dict content: {e}")
 
-                # Get quality from answer result (if answer agent provides it)
+                # If still no confidence, calculate based on available information
+                if confidence_score is None:
+                    confidence_score = self._calculate_fallback_confidence(all_sources, synthesis_result, validation_result)
+                    print(f"Calculated fallback confidence: {confidence_score}")
+
+                # Get quality from answer result
                 if final_answer and hasattr(final_answer, 'content'):
                     try:
-                        # Calculate quality based on answer characteristics
                         answer_content = final_answer.content
                         quality_score = self._calculate_quality_score(answer_content, all_sources, confidence_score)
-                    except:
-                        pass
+                        print(f"Calculated quality score: {quality_score}")
+                    except Exception as e:
+                        print(f"Error calculating quality score: {e}")
+                        quality_score = confidence_score * 0.8  # Fallback based on confidence
+
+                # Ensure we have valid scores
+                if confidence_score is None:
+                    confidence_score = 0.5
+                    print("Using absolute fallback confidence: 0.5")
+                if quality_score is None:
+                    quality_score = confidence_score * 0.8
+                    print(f"Using fallback quality based on confidence: {quality_score}")
 
                 final_result = {
                     "query": query,
@@ -441,6 +508,50 @@ class MultiAgentSearchTeam:
         quality_score = (quality_score * 0.7) + (confidence_score * 0.3)
 
         return min(max(quality_score, 0.1), 0.95)
+
+    def _calculate_fallback_confidence(self, sources: List[Dict[str, Any]], synthesis_result=None, validation_result=None) -> float:
+        """Calculate confidence when validation analysis is not available"""
+        confidence = 0.3  # Start with low base confidence
+
+        # Factor in source count and quality
+        if sources:
+            source_count = len(sources)
+            if source_count >= 3:
+                confidence += 0.2
+            if source_count >= 5:
+                confidence += 0.1
+
+            # Check for high-quality domains
+            high_quality_count = 0
+            for source in sources:
+                url = source.get('url', '').lower()
+                quality_domains = [
+                    'wikipedia.org', 'arxiv.org', 'nature.com', 'sciencedirect.com',
+                    'pubmed.ncbi.nlm.nih.gov', 'scholar.google.com', 'jstor.org',
+                    'reuters.com', 'bbc.com', 'cnn.com', 'nytimes.com', 'washingtonpost.com',
+                    'gov', 'edu', 'org'
+                ]
+                if any(domain in url for domain in quality_domains):
+                    high_quality_count += 1
+
+            if source_count > 0:
+                quality_ratio = high_quality_count / source_count
+                confidence += quality_ratio * 0.3
+
+        # Factor in synthesis quality if available
+        if synthesis_result and hasattr(synthesis_result, 'content'):
+            content = synthesis_result.content.lower()
+            # Look for positive indicators
+            positive_indicators = ['confirmed', 'verified', 'consistent', 'reliable', 'accurate']
+            negative_indicators = ['uncertain', 'unclear', 'conflicting', 'unverified', 'disputed']
+
+            positive_count = sum(1 for indicator in positive_indicators if indicator in content)
+            negative_count = sum(1 for indicator in negative_indicators if indicator in content)
+
+            confidence += (positive_count * 0.05)
+            confidence -= (negative_count * 0.1)
+
+        return min(max(confidence, 0.1), 0.9)
 
     async def _store_search_results(self, query: str, final_result: Dict[str, Any], sources: List[Dict[str, Any]]):
         """Store search results in vector database for future learning"""

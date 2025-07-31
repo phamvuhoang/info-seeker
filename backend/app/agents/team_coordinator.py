@@ -10,6 +10,7 @@ from datetime import datetime
 from ..core.config import settings
 from ..services.sse_manager import progress_manager
 from ..services.document_processor import document_processor
+from ..services.database_service import database_service
 from ..utils.performance_monitor import performance_monitor
 from ..utils.language_detector import language_detector
 from .rag_agent import create_rag_agent
@@ -177,6 +178,19 @@ class MultiAgentSearchTeam:
             self.start_time = time.time()
 
             try:
+                # Save agent workflow session start
+                await database_service.save_agent_workflow_session(
+                    session_id=self.session_id,
+                    workflow_name="hybrid_search",
+                    status="running",
+                    metadata={
+                        "query": query,
+                        "include_rag": include_rag,
+                        "include_web": include_web,
+                        "max_results": max_results
+                    }
+                )
+
                 # Detect query language and set language instruction
                 self.detected_language, confidence = language_detector.detect_language(query)
                 self.language_instruction = language_detector.get_language_instruction(self.detected_language)
@@ -356,6 +370,23 @@ class MultiAgentSearchTeam:
                 # Store search results for future learning
                 await self._store_search_results(query, final_result, all_sources)
 
+                # Save search to database
+                await database_service.save_search_history(
+                    session_id=self.session_id,
+                    query=query,
+                    response=final_result.get("answer", ""),
+                    sources=all_sources,
+                    processing_time=processing_time
+                )
+
+                # Update workflow session as completed
+                await database_service.save_agent_workflow_session(
+                    session_id=self.session_id,
+                    workflow_name="hybrid_search",
+                    status="completed",
+                    result=final_result
+                )
+
                 # Broadcast final result
                 await self._broadcast_final_result(final_result)
 
@@ -363,13 +394,32 @@ class MultiAgentSearchTeam:
 
             except Exception as e:
                 error_msg = f"Multi-agent search failed: {str(e)}"
+
+                # Update workflow session as failed
+                await database_service.save_agent_workflow_session(
+                    session_id=self.session_id,
+                    workflow_name="hybrid_search",
+                    status="failed",
+                    result={"error": error_msg}
+                )
+
                 await self.progress_manager.broadcast_error(self.session_id, error_msg)
                 raise e
     
     async def _run_agent_with_progress(self, agent, message: str, agent_name: str):
         """Run an agent with optimized progress tracking"""
+        start_time = time.time()
+
         try:
             await self._broadcast_progress(agent_name, "started", f"{agent_name} is processing...")
+
+            # Log agent execution start
+            await database_service.save_agent_execution_log(
+                session_id=self.session_id,
+                agent_name=agent_name,
+                status="started",
+                input_data={"message": message[:500]}  # Truncate long messages
+            )
 
             # Add language instruction to the message
             language_aware_message = f"{self.language_instruction}\n\n{message}"
@@ -377,11 +427,33 @@ class MultiAgentSearchTeam:
             # Run agent without excessive streaming overhead
             result = await agent.arun(language_aware_message)
 
+            execution_time_ms = int((time.time() - start_time) * 1000)
+
+            # Log agent execution completion
+            await database_service.save_agent_execution_log(
+                session_id=self.session_id,
+                agent_name=agent_name,
+                status="completed",
+                output_data={"result": str(result)[:500] if result else ""},  # Truncate long results
+                execution_time_ms=execution_time_ms
+            )
+
             await self._broadcast_progress(agent_name, "completed",
                                          f"{agent_name} completed successfully")
             return result
 
         except Exception as e:
+            execution_time_ms = int((time.time() - start_time) * 1000)
+
+            # Log agent execution failure
+            await database_service.save_agent_execution_log(
+                session_id=self.session_id,
+                agent_name=agent_name,
+                status="failed",
+                error_message=str(e),
+                execution_time_ms=execution_time_ms
+            )
+
             await self._broadcast_progress(agent_name, "failed", f"{agent_name} failed: {str(e)}")
             raise e
 

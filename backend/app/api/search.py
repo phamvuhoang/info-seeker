@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
-from typing import Optional
+from typing import Optional, List
 import time
 import uuid
 import logging
@@ -7,7 +7,8 @@ from ..models.search import SearchQuery, SearchResponse, SearchResult
 from ..agents.search_agent import create_search_agent
 from ..agents.team_coordinator import create_search_team
 from ..services.content_processor import ContentProcessor
-from pydantic import BaseModel
+from ..services.database_service import database_service
+from pydantic import BaseModel, Field
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +30,14 @@ class HybridSearchResponse(BaseModel):
     status: str
     session_id: str
     message: str
+
+
+class SearchFeedbackRequest(BaseModel):
+    session_id: str
+    query: str
+    rating: int = Field(..., ge=1, le=5, description="Rating from 1 to 5")
+    feedback_text: Optional[str] = None
+    sources_helpful: Optional[List[str]] = None
 
 
 @router.post("/search", response_model=SearchResponse)
@@ -80,6 +89,20 @@ async def search(
             sources=sources,
             processing_time=processing_time,
             session_id=session_id
+        )
+
+        # Save search to database
+        await database_service.save_search_history(
+            session_id=session_id,
+            query=query.query,
+            response=answer,
+            sources=[{
+                'title': source.title,
+                'url': source.url,
+                'source': source.source,
+                'relevance_score': source.relevance_score
+            } for source in sources],
+            processing_time=processing_time
         )
 
         logger.info(f"Search completed in {processing_time:.2f}s for session: {session_id}")
@@ -152,5 +175,31 @@ async def execute_hybrid_search(
 @router.get("/search/history/{session_id}")
 async def get_search_history(session_id: str):
     """Get search history for a session"""
-    # TODO: Implement search history retrieval
-    return {"session_id": session_id, "history": []}
+    try:
+        history = await database_service.get_search_history(session_id)
+        return {"session_id": session_id, "history": history}
+    except Exception as e:
+        logger.error(f"Failed to get search history for session {session_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve search history: {str(e)}")
+
+
+@router.post("/search/feedback")
+async def submit_search_feedback(feedback: SearchFeedbackRequest):
+    """Submit feedback for a search result"""
+    try:
+        success = await database_service.save_search_feedback(
+            session_id=feedback.session_id,
+            query=feedback.query,
+            rating=feedback.rating,
+            feedback_text=feedback.feedback_text,
+            sources_helpful=feedback.sources_helpful
+        )
+
+        if success:
+            return {"status": "success", "message": "Feedback saved successfully"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to save feedback")
+
+    except Exception as e:
+        logger.error(f"Failed to save search feedback: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save feedback: {str(e)}")

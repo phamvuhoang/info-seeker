@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from .api import health, search
+from .api import health, search, database
 from .core.config import settings
 from .core.connection_manager import cleanup_connections
 from .services.sse_manager import progress_manager
@@ -101,6 +101,7 @@ async def sse_endpoint(session_id: str):
 # Include routers
 app.include_router(health.router, tags=["health"])
 app.include_router(search.router, prefix="/api/v1", tags=["search"])
+app.include_router(database.router, prefix="/api/v1/database", tags=["database"])
 
 if __name__ == "__main__":
     import uvicorn

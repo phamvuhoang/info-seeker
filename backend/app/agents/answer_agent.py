@@ -48,7 +48,10 @@ class AnswerAgent(BaseStreamingAgent):
                 "Include confidence indicators where relevant.",
                 "Highlight key findings and important information.",
                 "Provide balanced perspectives when multiple viewpoints exist.",
-                "End with a clear summary or conclusion."
+                "End with a clear summary or conclusion.",
+                "IMPORTANT: Always respond in the same language as the user's query.",
+                "If you receive a language instruction at the beginning of the message, follow it strictly.",
+                "Maintain the same language throughout your entire response."
             ],
             storage=storage,
             show_tool_calls=True,
@@ -198,48 +201,86 @@ Please generate the final answer now.
         
         return context
     
-    def _analyze_answer(self, 
+    def _analyze_answer(self,
                        answer: str,
                        sources: List[Dict[str, Any]] = None,
                        validation: Dict[str, Any] = None) -> Dict[str, Any]:
         """Analyze the generated answer for quality metrics"""
-        
+
         analysis = {
-            "quality_score": 0.7,  # Default quality score
+            "quality_score": 0.5,  # Start with base score
             "word_count": len(answer.split()),
             "has_citations": False,
             "has_structure": False,
             "confidence_level": "medium",
             "completeness": "adequate"
         }
-        
+
         # Check for citations
-        citation_indicators = ["source:", "according to", "based on", "reference:", "[", "]", "http"]
+        citation_indicators = ["source:", "according to", "based on", "reference:", "[", "]", "http", "www.", ".com", ".org"]
         analysis["has_citations"] = any(indicator in answer.lower() for indicator in citation_indicators)
-        
+
         # Check for structure
-        structure_indicators = ["#", "##", "###", "**", "*", "1.", "2.", "3."]
+        structure_indicators = ["#", "##", "###", "**", "*", "1.", "2.", "3.", "•", "-"]
         analysis["has_structure"] = any(indicator in answer for indicator in structure_indicators)
-        
-        # Calculate quality score
-        quality_score = 0.5  # Base score
-        
-        # Add points for various factors
+
+        # Calculate quality score based on multiple factors
+        quality_score = 0.3  # Base score
+
+        # Content quality factors
         if analysis["has_citations"]:
-            quality_score += 0.2
+            quality_score += 0.25  # Strong boost for citations
         if analysis["has_structure"]:
-            quality_score += 0.1
+            quality_score += 0.15  # Good boost for structure
         if analysis["word_count"] > 100:
-            quality_score += 0.1
-        if sources and len(sources) > 3:
-            quality_score += 0.1
-        
+            quality_score += 0.1   # Boost for comprehensive answers
+        if analysis["word_count"] > 300:
+            quality_score += 0.05  # Additional boost for detailed answers
+
+        # Source quality factors
+        if sources:
+            source_count = len(sources)
+            if source_count >= 3:
+                quality_score += 0.1
+            if source_count >= 5:
+                quality_score += 0.05
+
+            # Check source diversity
+            unique_domains = set()
+            for source in sources:
+                url = source.get('url', '')
+                if url:
+                    try:
+                        from urllib.parse import urlparse
+                        domain = urlparse(url).netloc
+                        unique_domains.add(domain)
+                    except:
+                        pass
+
+            if len(unique_domains) >= 3:
+                quality_score += 0.1  # Boost for diverse sources
+
+        # Content analysis
+        answer_lower = answer.lower()
+
+        # Check for comprehensive coverage
+        comprehensive_indicators = ["overview", "summary", "conclusion", "key points", "important", "significant"]
+        if any(indicator in answer_lower for indicator in comprehensive_indicators):
+            quality_score += 0.05
+
+        # Check for balanced perspective
+        balance_indicators = ["however", "although", "on the other hand", "alternatively", "different", "various"]
+        if any(indicator in answer_lower for indicator in balance_indicators):
+            quality_score += 0.05
+
         # Factor in validation confidence if available
         if validation and validation.get("analysis", {}).get("confidence_score"):
             validation_confidence = validation["analysis"]["confidence_score"]
-            quality_score = (quality_score + validation_confidence) / 2
-        
-        analysis["quality_score"] = min(quality_score, 1.0)
+            # Weight validation confidence heavily in quality calculation
+            quality_score = (quality_score * 0.6) + (validation_confidence * 0.4)
+
+        # Ensure quality score is within reasonable bounds
+        analysis["quality_score"] = min(max(quality_score, 0.1), 0.95)
         
         # Determine confidence level
         if analysis["quality_score"] > 0.8:

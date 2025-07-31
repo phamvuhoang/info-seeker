@@ -1,7 +1,9 @@
 from agno.models.openai import OpenAIChat
 from agno.storage.redis import RedisStorage
+from agno.tools.duckduckgo import DuckDuckGoTools
 from typing import Dict, Any, List
 import asyncio
+import re
 from datetime import datetime
 from ..core.config import settings
 from ..services.sse_manager import progress_manager
@@ -31,25 +33,34 @@ class ValidationAgent(BaseStreamingAgent):
                 print(f"Warning: Failed to configure Redis storage: {e}")
                 storage = None
 
+        # Add DuckDuckGo tools for fact-checking
+        ddg_tools = DuckDuckGoTools(search=True, news=True, fixed_max_results=3)
+
         super().__init__(
             name="Information Validator",
             model=OpenAIChat(
                 id="gpt-4o",
                 api_key=settings.openai_api_key
             ),
-            description="Information validation specialist",
+            description="Information validation specialist with fact-checking capabilities",
             instructions=[
                 "You are the information validation specialist for InfoSeeker.",
                 "Verify accuracy and consistency of synthesized information.",
+                "Use web search tools to fact-check key claims when necessary.",
                 "Check for potential biases or misinformation indicators.",
                 "Assess source credibility and reliability.",
                 "Flag any inconsistencies or concerns in the information.",
                 "Evaluate the logical coherence of the synthesized response.",
-                "Check for factual accuracy where possible.",
+                "Cross-reference information with multiple sources when possible.",
                 "Identify areas where claims need additional verification.",
-                "Provide confidence scores for different aspects of the information.",
-                "Suggest improvements or corrections if needed."
+                "Provide detailed confidence scores with reasoning.",
+                "Suggest improvements or corrections if needed.",
+                "When in doubt, search for additional sources to verify claims.",
+                "IMPORTANT: Always respond in the same language as the user's query.",
+                "If you receive a language instruction at the beginning of the message, follow it strictly.",
+                "Maintain the same language throughout your entire response."
             ],
+            tools=[ddg_tools],
             storage=storage,
             show_tool_calls=True,
             markdown=True
@@ -77,10 +88,16 @@ class ValidationAgent(BaseStreamingAgent):
             
             # Prepare validation context
             validation_context = self._prepare_validation_context(synthesis, sources, query)
-            
-            # Create validation prompt
+
+            # Extract key claims for fact-checking
+            key_claims = self._extract_key_claims(synthesis)
+
+            # Perform additional fact-checking if claims are found
+            fact_check_results = await self._perform_fact_check(key_claims, query)
+
+            # Create enhanced validation prompt with fact-checking instructions
             validation_prompt = f"""
-Please validate the following synthesized information:
+Please perform a comprehensive validation of the following synthesized information:
 
 Query: {query}
 
@@ -89,16 +106,40 @@ Synthesized Response:
 
 {validation_context}
 
-Please provide a validation report that includes:
-1. Accuracy Assessment: Check for factual correctness
-2. Consistency Check: Identify any contradictions
-3. Source Reliability: Evaluate the credibility of sources
-4. Bias Detection: Look for potential biases or one-sided perspectives
-5. Completeness: Assess if important information is missing
-6. Confidence Score: Rate overall confidence (0-1) in the information
-7. Recommendations: Suggest any improvements or corrections
+VALIDATION METHODOLOGY:
+1. FACTUAL ACCURACY: Cross-reference key claims against multiple sources
+2. LOGICAL CONSISTENCY: Check for internal contradictions and logical flow
+3. SOURCE CREDIBILITY: Evaluate the reliability and authority of cited sources
+4. BIAS DETECTION: Identify potential biases, missing perspectives, or one-sided viewpoints
+5. COMPLETENESS: Assess coverage of important aspects and identify gaps
+6. TEMPORAL RELEVANCE: Check if information is current and up-to-date
+7. CROSS-VERIFICATION: Look for corroboration across different source types
 
-Format your response as a structured validation report.
+SPECIFIC VALIDATION TASKS:
+- Identify any factual claims that need verification
+- Check for contradictions between different sources
+- Assess the credibility of each source (domain authority, publication date, author credentials)
+- Look for potential biases in language, selection of facts, or omission of important information
+- Evaluate if the response adequately addresses the original query
+- Consider alternative viewpoints or interpretations that might be missing
+
+CONFIDENCE SCORING CRITERIA:
+- 0.9-1.0: Highly confident - Multiple reliable sources, no contradictions, comprehensive coverage
+- 0.7-0.8: Confident - Good sources, minor inconsistencies, adequate coverage
+- 0.5-0.6: Moderate confidence - Mixed source quality, some contradictions, partial coverage
+- 0.3-0.4: Low confidence - Questionable sources, significant contradictions, incomplete
+- 0.1-0.2: Very low confidence - Unreliable sources, major contradictions, inadequate
+
+Please provide a detailed validation report with:
+1. Overall Confidence Score (0.0-1.0)
+2. Factual Accuracy Assessment
+3. Source Reliability Analysis
+4. Bias and Perspective Analysis
+5. Completeness Evaluation
+6. Specific Issues Found (if any)
+7. Recommendations for Improvement
+
+Be specific about any concerns and provide reasoning for your confidence score.
 """
             
             # Run validation
@@ -106,6 +147,17 @@ Format your response as a structured validation report.
             
             # Extract confidence score and issues
             validation_analysis = self._analyze_validation(response.content, sources)
+
+            # Factor in fact-checking results
+            if fact_check_results["overall_verification_score"] != 0.7:  # If fact-checking was performed
+                # Weight the original confidence with fact-checking results
+                original_confidence = validation_analysis["confidence_score"]
+                fact_check_confidence = fact_check_results["overall_verification_score"]
+                validation_analysis["confidence_score"] = (original_confidence * 0.6) + (fact_check_confidence * 0.4)
+                validation_analysis["fact_check_performed"] = True
+                validation_analysis["fact_check_results"] = fact_check_results
+            else:
+                validation_analysis["fact_check_performed"] = False
             
             # Broadcast progress
             if self.session_id:
@@ -184,7 +236,7 @@ Format your response as a structured validation report.
     
     def _analyze_validation(self, validation_report: str, sources: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Analyze validation report for key metrics"""
-        
+
         analysis = {
             "confidence_score": 0.7,  # Default confidence
             "status": "validated",
@@ -193,11 +245,14 @@ Format your response as a structured validation report.
             "bias_detected": False,
             "completeness": "adequate"
         }
-        
+
         # Simple keyword-based analysis (in production, use more sophisticated NLP)
         report_lower = validation_report.lower()
-        
-        # Extract confidence score
+
+        # Calculate confidence score based on multiple factors
+        confidence_score = 0.5  # Base score
+
+        # Extract explicit confidence score from report
         if "confidence" in report_lower:
             # Look for patterns like "confidence: 0.8" or "confidence score: 85%"
             import re
@@ -206,15 +261,51 @@ Format your response as a structured validation report.
                 r"confidence score[:\s]+([0-9]+)%",
                 r"overall confidence[:\s]+([0-9]*\.?[0-9]+)"
             ]
-            
+
             for pattern in confidence_patterns:
                 match = re.search(pattern, report_lower)
                 if match:
                     score = float(match.group(1))
                     if score > 1:  # Percentage format
                         score = score / 100
-                    analysis["confidence_score"] = min(max(score, 0), 1)
+                    confidence_score = min(max(score, 0), 1)
                     break
+
+        # Adjust confidence based on validation indicators
+        positive_indicators = ["accurate", "reliable", "consistent", "credible", "verified", "confirmed"]
+        negative_indicators = ["inaccurate", "unreliable", "inconsistent", "biased", "unverified", "questionable", "contradictory"]
+
+        positive_count = sum(1 for indicator in positive_indicators if indicator in report_lower)
+        negative_count = sum(1 for indicator in negative_indicators if indicator in report_lower)
+
+        # Adjust confidence based on indicators
+        confidence_score += (positive_count * 0.05)  # Boost for positive indicators
+        confidence_score -= (negative_count * 0.1)   # Reduce for negative indicators
+
+        # Factor in source quality
+        if sources:
+            high_quality_sources = 0
+            total_sources = len(sources)
+
+            for source in sources:
+                url = source.get('url', '').lower()
+                # Check for high-quality domains
+                quality_domains = [
+                    'wikipedia.org', 'arxiv.org', 'nature.com', 'sciencedirect.com',
+                    'pubmed.ncbi.nlm.nih.gov', 'scholar.google.com', 'jstor.org',
+                    'reuters.com', 'bbc.com', 'cnn.com', 'nytimes.com', 'washingtonpost.com',
+                    'gov', 'edu', 'org'
+                ]
+
+                if any(domain in url for domain in quality_domains):
+                    high_quality_sources += 1
+
+            if total_sources > 0:
+                source_quality_ratio = high_quality_sources / total_sources
+                confidence_score += (source_quality_ratio * 0.2)  # Up to 20% boost for quality sources
+
+        # Ensure confidence is within bounds
+        analysis["confidence_score"] = min(max(confidence_score, 0.1), 0.95)
         
         # Check for issues
         issue_keywords = ["contradiction", "inconsistent", "unreliable", "bias", "missing", "incomplete"]
@@ -251,7 +342,92 @@ Format your response as a structured validation report.
                 analysis["source_reliability"] = "low"
         
         return analysis
-    
+
+    def _extract_key_claims(self, content: str) -> List[str]:
+        """Extract key factual claims that should be verified"""
+        claims = []
+
+        # Split content into sentences
+        sentences = re.split(r'[.!?]+', content)
+
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if len(sentence) < 20:  # Skip very short sentences
+                continue
+
+            # Look for sentences with factual indicators
+            factual_indicators = [
+                r'\d+%',  # Percentages
+                r'\$\d+',  # Dollar amounts
+                r'\d{4}',  # Years
+                r'according to',
+                r'studies show',
+                r'research indicates',
+                r'data shows',
+                r'statistics reveal',
+                r'reports suggest',
+                r'experts say',
+                r'scientists found',
+                r'analysis shows'
+            ]
+
+            for indicator in factual_indicators:
+                if re.search(indicator, sentence, re.IGNORECASE):
+                    claims.append(sentence)
+                    break
+
+        return claims[:5]  # Limit to top 5 claims to avoid overwhelming the validation
+
+    async def _perform_fact_check(self, claims: List[str], query: str) -> Dict[str, Any]:
+        """Perform additional fact-checking on key claims"""
+        fact_check_results = {
+            "claims_checked": len(claims),
+            "verification_results": [],
+            "overall_verification_score": 0.7
+        }
+
+        if not claims:
+            return fact_check_results
+
+        try:
+            # Create a fact-checking query
+            fact_check_query = f"Verify facts about: {query} - checking claims about {', '.join(claims[:2])}"
+
+            # Use the agent's built-in search capability
+            verification_response = await super().arun(f"Please search for and verify these claims: {fact_check_query}")
+
+            if verification_response and hasattr(verification_response, 'content'):
+                # Analyze the verification response
+                verification_content = verification_response.content.lower()
+
+                # Look for verification indicators
+                positive_verification = ['confirmed', 'verified', 'accurate', 'correct', 'true', 'supported']
+                negative_verification = ['false', 'incorrect', 'disputed', 'unverified', 'contradicted']
+
+                positive_count = sum(1 for indicator in positive_verification if indicator in verification_content)
+                negative_count = sum(1 for indicator in negative_verification if indicator in verification_content)
+
+                # Calculate verification score
+                if positive_count > negative_count:
+                    fact_check_results["overall_verification_score"] = min(0.8 + (positive_count * 0.05), 0.95)
+                elif negative_count > positive_count:
+                    fact_check_results["overall_verification_score"] = max(0.3 - (negative_count * 0.1), 0.1)
+                else:
+                    fact_check_results["overall_verification_score"] = 0.6
+
+                fact_check_results["verification_results"].append({
+                    "query": fact_check_query,
+                    "result": verification_response.content[:200] + "..." if len(verification_response.content) > 200 else verification_response.content,
+                    "positive_indicators": positive_count,
+                    "negative_indicators": negative_count
+                })
+
+        except Exception as e:
+            print(f"Fact-checking error: {e}")
+            fact_check_results["overall_verification_score"] = 0.5  # Neutral score on error
+
+        return fact_check_results
+
     async def arun(self, message: str, **kwargs) -> Any:
         """Override arun to add progress tracking"""
         try:

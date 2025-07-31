@@ -50,7 +50,10 @@ class RAGAgent(BaseStreamingAgent):
                 "Include relevance scores and source metadata.",
                 "Focus on comprehensive knowledge base coverage.",
                 "Always cite sources with metadata when available.",
-                "If no relevant information is found, clearly state this."
+                "If no relevant information is found, clearly state this.",
+                "IMPORTANT: Always respond in the same language as the user's query.",
+                "If you receive a language instruction at the beginning of the message, follow it strictly.",
+                "Maintain the same language throughout your entire response."
             ],
             storage=storage,
             show_tool_calls=True,

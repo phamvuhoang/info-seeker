@@ -47,7 +47,10 @@ class SynthesisAgent(BaseStreamingAgent):
                 "Highlight when information from different sources agrees or disagrees.",
                 "Prioritize recent information for current events, stored knowledge for established facts.",
                 "Create well-structured responses with clear sections and citations.",
-                "Identify gaps in information and note areas where more research might be needed."
+                "Identify gaps in information and note areas where more research might be needed.",
+                "IMPORTANT: Always respond in the same language as the user's query.",
+                "If you receive a language instruction at the beginning of the message, follow it strictly.",
+                "Maintain the same language throughout your entire response."
             ],
             storage=storage,
             show_tool_calls=True,

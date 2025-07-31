@@ -16,3 +16,4 @@ websockets>=12.0
 ddgs>=6.3.0
 duckduckgo-search>=6.3.0
 aiohttp>=3.9.0
+langdetect>=1.0.9

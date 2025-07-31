@@ -9,7 +9,9 @@ import time
 from datetime import datetime
 from ..core.config import settings
 from ..services.sse_manager import progress_manager
+from ..services.document_processor import document_processor
 from ..utils.performance_monitor import performance_monitor
+from ..utils.language_detector import language_detector
 from .rag_agent import create_rag_agent
 from .web_search_agent import create_web_search_agent
 from .synthesis_agent import create_synthesis_agent
@@ -22,6 +24,8 @@ class MultiAgentSearchTeam:
         self.session_id = session_id
         self.progress_manager = progress_manager
         self.start_time = None
+        self.detected_language = 'en'  # Default to English
+        self.language_instruction = ""
 
         # Shared Redis storage for better performance
         self.shared_storage = self._create_shared_storage()
@@ -170,6 +174,13 @@ class MultiAgentSearchTeam:
             self.start_time = time.time()
 
             try:
+                # Detect query language and set language instruction
+                self.detected_language, confidence = language_detector.detect_language(query)
+                self.language_instruction = language_detector.get_language_instruction(self.detected_language)
+
+                language_name = language_detector.get_language_name(self.detected_language)
+                print(f"Detected language: {language_name} ({self.detected_language}) with confidence: {confidence:.2f}")
+
                 # Initialize search session
                 await self._initialize_search_session(query)
 
@@ -231,6 +242,30 @@ class MultiAgentSearchTeam:
 
                 processing_time = time.time() - self.start_time
 
+                # Extract confidence and quality scores from validation and answer results
+                confidence_score = 0.7  # Default
+                quality_score = 0.7     # Default
+
+                # Get confidence from validation result
+                if validation_result and hasattr(validation_result, 'content'):
+                    try:
+                        # Try to extract confidence from validation content
+                        import re
+                        confidence_match = re.search(r'confidence[:\s]+([0-9]*\.?[0-9]+)', validation_result.content.lower())
+                        if confidence_match:
+                            confidence_score = min(max(float(confidence_match.group(1)), 0.1), 0.95)
+                    except:
+                        pass
+
+                # Get quality from answer result (if answer agent provides it)
+                if final_answer and hasattr(final_answer, 'content'):
+                    try:
+                        # Calculate quality based on answer characteristics
+                        answer_content = final_answer.content
+                        quality_score = self._calculate_quality_score(answer_content, all_sources, confidence_score)
+                    except:
+                        pass
+
                 final_result = {
                     "query": query,
                     "answer": final_answer.content if final_answer else "Unable to generate answer",
@@ -243,9 +278,16 @@ class MultiAgentSearchTeam:
                         "include_rag": include_rag,
                         "include_web": include_web,
                         "max_results": max_results,
-                        "parallel_execution": include_rag and include_web
+                        "parallel_execution": include_rag and include_web,
+                        "detected_language": self.detected_language,
+                        "language_name": language_detector.get_language_name(self.detected_language),
+                        "confidence_score": confidence_score,
+                        "quality_score": quality_score
                     }
                 }
+
+                # Store search results for future learning
+                await self._store_search_results(query, final_result, all_sources)
 
                 # Broadcast final result
                 await self._broadcast_final_result(final_result)
@@ -262,8 +304,11 @@ class MultiAgentSearchTeam:
         try:
             await self._broadcast_progress(agent_name, "started", f"{agent_name} is processing...")
 
+            # Add language instruction to the message
+            language_aware_message = f"{self.language_instruction}\n\n{message}"
+
             # Run agent without excessive streaming overhead
-            result = await agent.arun(message)
+            result = await agent.arun(language_aware_message)
 
             await self._broadcast_progress(agent_name, "completed",
                                          f"{agent_name} completed successfully")
@@ -304,17 +349,30 @@ class MultiAgentSearchTeam:
 
         for result in results:
             if result and hasattr(result, 'content'):
-                # Simple URL extraction from content
-                import re
-                urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+',
-                                result.content)
-                for url in urls:
-                    all_sources.append({
-                        "title": f"Source from search",
-                        "url": url,
-                        "relevance_score": 0.8,
-                        "source_type": "extracted"
-                    })
+                # Check if this is a web search result with structured data
+                if hasattr(result, 'search_results') and result.search_results:
+                    # Use structured search results if available
+                    for search_result in result.search_results:
+                        all_sources.append({
+                            "title": search_result.get("title", "Source from search"),
+                            "url": search_result.get("url", ""),
+                            "content": search_result.get("content", "")[:300] + "..." if len(search_result.get("content", "")) > 300 else search_result.get("content", ""),
+                            "relevance_score": search_result.get("relevance_score", 0.8),
+                            "source_type": search_result.get("source_type", "web_search")
+                        })
+                else:
+                    # Fallback to simple URL extraction from content
+                    import re
+                    urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+',
+                                    result.content)
+                    for url in urls:
+                        all_sources.append({
+                            "title": f"Source from search",
+                            "url": url,
+                            "content": "",
+                            "relevance_score": 0.8,
+                            "source_type": "extracted"
+                        })
 
         return all_sources
 
@@ -347,7 +405,101 @@ class MultiAgentSearchTeam:
             agents.append("Web Search Specialist")
         agents.extend(["Information Synthesizer", "Information Validator", "Answer Generator"])
         return agents
-    
+
+    def _calculate_quality_score(self, answer_content: str, sources: List[Dict[str, Any]], confidence_score: float) -> float:
+        """Calculate quality score based on answer characteristics"""
+        quality_score = 0.3  # Base score
+
+        # Content length factor
+        word_count = len(answer_content.split())
+        if word_count > 100:
+            quality_score += 0.1
+        if word_count > 300:
+            quality_score += 0.05
+
+        # Citation factor
+        citation_indicators = ["source:", "according to", "based on", "reference:", "[", "]", "http", "www.", ".com", ".org"]
+        has_citations = any(indicator in answer_content.lower() for indicator in citation_indicators)
+        if has_citations:
+            quality_score += 0.2
+
+        # Structure factor
+        structure_indicators = ["#", "##", "###", "**", "*", "1.", "2.", "3.", "•", "-"]
+        has_structure = any(indicator in answer_content for indicator in structure_indicators)
+        if has_structure:
+            quality_score += 0.15
+
+        # Source count factor
+        if sources:
+            source_count = len(sources)
+            if source_count >= 3:
+                quality_score += 0.1
+            if source_count >= 5:
+                quality_score += 0.05
+
+        # Factor in confidence score
+        quality_score = (quality_score * 0.7) + (confidence_score * 0.3)
+
+        return min(max(quality_score, 0.1), 0.95)
+
+    async def _store_search_results(self, query: str, final_result: Dict[str, Any], sources: List[Dict[str, Any]]):
+        """Store search results in vector database for future learning"""
+        try:
+            # Store the final answer as a document
+            answer_content = final_result.get("answer", "")
+            if answer_content and len(answer_content.strip()) > 50:
+                answer_metadata = {
+                    "type": "search_result",
+                    "query": query,
+                    "session_id": self.session_id,
+                    "language": self.detected_language,
+                    "confidence_score": final_result.get("metadata", {}).get("confidence_score", 0.7),
+                    "quality_score": final_result.get("metadata", {}).get("quality_score", 0.7),
+                    "agents_used": final_result.get("metadata", {}).get("agents_used", []),
+                    "source_count": len(sources),
+                    "created_at": datetime.now().isoformat()
+                }
+
+                await document_processor.process_and_index_content(answer_content, answer_metadata)
+                print(f"Stored search result for query: {query[:50]}...")
+
+            # Store individual sources if they're not already in the database
+            if sources:
+                source_documents = []
+                for source in sources:
+                    content = source.get("content", "")
+                    if not content or len(content.strip()) < 50:
+                        continue
+
+                    source_metadata = {
+                        "type": "web_source",
+                        "title": source.get("title", ""),
+                        "url": source.get("url", ""),
+                        "source_type": source.get("source_type", "web_search"),
+                        "relevance_score": source.get("relevance_score", 0.5),
+                        "similarity_score": source.get("similarity_score", 0.5),
+                        "related_query": query,
+                        "language": self.detected_language,
+                        "indexed_from_search": True,
+                        "created_at": datetime.now().isoformat()
+                    }
+
+                    source_documents.append({
+                        "content": content,
+                        "metadata": source_metadata
+                    })
+
+                # Process sources in batch
+                if source_documents:
+                    for doc in source_documents[:5]:  # Limit to top 5 sources to avoid overwhelming the DB
+                        await document_processor.process_and_index_content(doc["content"], doc["metadata"])
+
+                    print(f"Stored {len(source_documents)} source documents from search")
+
+        except Exception as e:
+            print(f"Error storing search results: {e}")
+            # Don't raise the error as this shouldn't break the search flow
+
     async def simple_search(self, query: str) -> str:
         """Simple search using the team (for compatibility)"""
         try:

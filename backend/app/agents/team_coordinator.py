@@ -11,6 +11,7 @@ from ..core.config import settings
 from ..services.sse_manager import progress_manager
 from ..services.document_processor import document_processor
 from ..services.database_service import database_service
+from ..services.vector_embedding_service import vector_embedding_service
 from ..utils.performance_monitor import performance_monitor
 from ..utils.language_detector import language_detector
 from .rag_agent import create_rag_agent
@@ -626,9 +627,9 @@ class MultiAgentSearchTeam:
         return min(max(confidence, 0.1), 0.9)
 
     async def _store_search_results(self, query: str, final_result: Dict[str, Any], sources: List[Dict[str, Any]]):
-        """Store search results in vector database for future learning"""
+        """Store search results in vector database for future learning using vector embedding service"""
         try:
-            # Store the final answer as a document
+            # Store the final answer as a document using vector embedding service
             answer_content = final_result.get("answer", "")
             if answer_content and len(answer_content.strip()) > 50:
                 answer_metadata = {
@@ -643,41 +644,35 @@ class MultiAgentSearchTeam:
                     "created_at": datetime.now().isoformat()
                 }
 
-                await document_processor.process_and_index_content(answer_content, answer_metadata)
-                print(f"Stored search result for query: {query[:50]}...")
+                # Use vector embedding service to store the answer
+                await vector_embedding_service.store_document(answer_content, answer_metadata)
+                print(f"Stored search result with vector embeddings for query: {query[:50]}...")
 
-            # Store individual sources if they're not already in the database
+            # Store individual sources using vector embedding service
             if sources:
-                source_documents = []
+                # Prepare search results for vector storage
+                search_results_for_storage = []
                 for source in sources:
                     content = source.get("content", "")
                     if not content or len(content.strip()) < 50:
                         continue
 
-                    source_metadata = {
-                        "type": "web_source",
+                    search_result = {
+                        "content": content,
                         "title": source.get("title", ""),
                         "url": source.get("url", ""),
-                        "source_type": source.get("source_type", "web_search"),
+                        "source": source.get("source_type", "web_search"),
                         "relevance_score": source.get("relevance_score", 0.5),
-                        "similarity_score": source.get("similarity_score", 0.5),
-                        "related_query": query,
-                        "language": self.detected_language,
-                        "indexed_from_search": True,
-                        "created_at": datetime.now().isoformat()
+                        "timestamp": datetime.now().isoformat()
                     }
+                    search_results_for_storage.append(search_result)
 
-                    source_documents.append({
-                        "content": content,
-                        "metadata": source_metadata
-                    })
-
-                # Process sources in batch
-                if source_documents:
-                    for doc in source_documents[:5]:  # Limit to top 5 sources to avoid overwhelming the DB
-                        await document_processor.process_and_index_content(doc["content"], doc["metadata"])
-
-                    print(f"Stored {len(source_documents)} source documents from search")
+                # Use vector embedding service to store search results
+                if search_results_for_storage:
+                    # Limit to top 5 sources to avoid overwhelming the DB
+                    limited_results = search_results_for_storage[:5]
+                    await vector_embedding_service.store_search_results(limited_results, query)
+                    print(f"Stored {len(limited_results)} source documents with vector embeddings from search")
 
         except Exception as e:
             print(f"Error storing search results: {e}")

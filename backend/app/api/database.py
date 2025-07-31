@@ -3,6 +3,7 @@ from typing import List, Dict, Any, Optional, Union
 import asyncpg
 import logging
 from ..core.config import settings
+from ..core.migrations import migration_manager
 from pydantic import BaseModel
 import json
 from datetime import datetime
@@ -450,3 +451,39 @@ async def update_row(table_name: str, row_id: str, update_data: UpdateRowRequest
     except Exception as e:
         logger.error(f"Failed to update row in {table_name}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to update row: {str(e)}")
+
+
+@router.get("/migrations/status")
+async def get_migration_status():
+    """Get the current status of database migrations"""
+    try:
+        status = await migration_manager.get_migration_status()
+        return {
+            "success": True,
+            "migration_status": status
+        }
+    except Exception as e:
+        logger.error(f"Failed to get migration status: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get migration status: {str(e)}")
+
+
+@router.post("/migrations/run")
+async def run_migrations():
+    """Manually trigger database migrations"""
+    try:
+        logger.info("Manual migration run requested")
+        success = await migration_manager.run_migrations()
+
+        if success:
+            return {
+                "success": True,
+                "message": "Migrations completed successfully"
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Some migrations failed - check logs for details"
+            }
+    except Exception as e:
+        logger.error(f"Failed to run migrations: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to run migrations: {str(e)}")

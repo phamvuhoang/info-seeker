@@ -135,23 +135,45 @@ class DatabaseService:
         """Save agent execution log"""
         try:
             async with await self.get_connection() as conn:
-                query = """
-                    INSERT INTO agent_execution_logs 
-                    (session_id, agent_name, step_name, status, started_at, input_data, output_data, error_message, execution_time_ms, completed_at)
-                    VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8, CASE WHEN $4 IN ('completed', 'failed') THEN NOW() ELSE NULL END);
-                """
-                
-                await conn.execute(
-                    query,
-                    session_id,
-                    agent_name,
-                    step_name,
-                    status,
-                    json.dumps(input_data or {}),
-                    json.dumps(output_data or {}),
-                    error_message,
-                    execution_time_ms
-                )
+                # Handle timing properly to avoid constraint violations
+                if status in ('completed', 'failed'):
+                    # For completed/failed status, use a query that ensures completed_at > started_at
+                    query = """
+                        INSERT INTO agent_execution_logs
+                        (session_id, agent_name, step_name, status, started_at, input_data, output_data, error_message, execution_time_ms, completed_at)
+                        VALUES ($1, $2, $3, $4::VARCHAR(50), NOW(), $5, $6, $7, $8, NOW() + INTERVAL '1 millisecond');
+                    """
+
+                    await conn.execute(
+                        query,
+                        session_id,
+                        agent_name,
+                        step_name,
+                        status,
+                        json.dumps(input_data or {}),
+                        json.dumps(output_data or {}),
+                        error_message,
+                        execution_time_ms
+                    )
+                else:
+                    # For started status, completed_at is NULL
+                    query = """
+                        INSERT INTO agent_execution_logs
+                        (session_id, agent_name, step_name, status, started_at, input_data, output_data, error_message, execution_time_ms, completed_at)
+                        VALUES ($1, $2, $3, $4::VARCHAR(50), NOW(), $5, $6, $7, $8, NULL);
+                    """
+
+                    await conn.execute(
+                        query,
+                        session_id,
+                        agent_name,
+                        step_name,
+                        status,
+                        json.dumps(input_data or {}),
+                        json.dumps(output_data or {}),
+                        error_message,
+                        execution_time_ms
+                    )
                 logger.info(f"Saved agent execution log: {agent_name} - {status}")
                 return True
                 

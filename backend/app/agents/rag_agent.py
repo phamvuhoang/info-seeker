@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime
 import logging
 from ..core.config import settings
-from ..core.vector_db import vector_db_manager
+from ..services.vector_embedding_service import vector_embedding_service
 from ..services.sse_manager import progress_manager
 from .base_streaming_agent import BaseStreamingAgent
 import json
@@ -61,7 +61,7 @@ class RAGAgent(BaseStreamingAgent):
         )
         
         self.session_id = session_id
-        self.vector_db = vector_db_manager
+        self.vector_embedding_service = vector_embedding_service
     
     async def search_knowledge_base(self, query: str, max_results: int = None) -> Dict[str, Any]:
         """Search the vector database for relevant information"""
@@ -79,8 +79,8 @@ class RAGAgent(BaseStreamingAgent):
                     }
                 )
             
-            # Search vector database
-            results = await self.vector_db.search_similar(query, limit=max_results)
+            # Search vector database using vector embedding service
+            results = await self.vector_embedding_service.similarity_search(query, limit=max_results)
             
             if not results:
                 # Broadcast completion with no results
@@ -155,8 +155,83 @@ class RAGAgent(BaseStreamingAgent):
                 "query": query
             }
 
+    async def enhanced_similarity_search(self, query: str, filters: Dict[str, Any] = None,
+                                       max_results: int = None) -> Dict[str, Any]:
+        """Enhanced similarity search with filtering and context management"""
+        max_results = max_results or settings.max_rag_results
 
-    
+        try:
+            # Apply default filters for better results
+            search_filters = filters or {}
+
+            # Search with filters
+            results = await self.vector_embedding_service.similarity_search(
+                query,
+                limit=max_results,
+                filters=search_filters
+            )
+
+            if not results:
+                return {
+                    "status": "no_results",
+                    "message": "No relevant information found in knowledge base.",
+                    "results": [],
+                    "query": query
+                }
+
+            # Enhanced result processing with relevance scoring
+            enhanced_results = []
+            for result in results:
+                # Calculate combined relevance score
+                similarity_score = result.get("similarity_score", 0.0)
+                metadata = result.get("metadata", {})
+
+                # Boost score based on metadata quality
+                quality_boost = 0.0
+                if metadata.get("confidence_score", 0) > 0.8:
+                    quality_boost += 0.1
+                if metadata.get("source_type") in ["search_result", "web_source"]:
+                    quality_boost += 0.05
+
+                combined_score = min(similarity_score + quality_boost, 1.0)
+
+                enhanced_result = {
+                    "content": result["content"],
+                    "similarity_score": similarity_score,
+                    "combined_score": combined_score,
+                    "metadata": metadata,
+                    "source_type": metadata.get("source_type", "unknown"),
+                    "title": metadata.get("title", "Untitled"),
+                    "url": metadata.get("url", ""),
+                    "indexed_at": metadata.get("indexed_at", ""),
+                    "confidence_score": metadata.get("confidence_score", 0.0),
+                    "language": metadata.get("language", "unknown")
+                }
+                enhanced_results.append(enhanced_result)
+
+            # Sort by combined score
+            enhanced_results.sort(key=lambda x: x["combined_score"], reverse=True)
+
+            return {
+                "status": "success",
+                "message": f"Found {len(enhanced_results)} relevant documents",
+                "results": enhanced_results,
+                "query": query,
+                "total_results": len(enhanced_results),
+                "filters_applied": search_filters
+            }
+
+        except Exception as e:
+            error_msg = f"Enhanced similarity search error: {str(e)}"
+            logger.error(error_msg)
+
+            return {
+                "status": "error",
+                "message": error_msg,
+                "results": [],
+                "query": query
+            }
+
     async def arun(self, message: str, **kwargs) -> Any:
         """Optimized RAG agent execution"""
         try:

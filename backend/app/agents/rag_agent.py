@@ -57,7 +57,7 @@ class RAGAgent(BaseStreamingAgent):
                     ),
                     search_type=SearchType.hybrid
                 ),
-                num_documents=settings.max_rag_results,  # Number of documents to retrieve
+                num_documents=min(settings.max_rag_results, 3),  # Limit to 3 documents to prevent domination
             )
             logger.info("Successfully initialized agno knowledge base for RAG agent")
         except Exception as e:
@@ -74,14 +74,13 @@ class RAGAgent(BaseStreamingAgent):
             description="RAG specialist for stored knowledge retrieval",
             instructions=[
                 "You are the RAG specialist for InfoSeeker.",
-                "ALWAYS start by searching the knowledge base using the search_knowledge_base tool.",
-                "Analyze ALL returned documents thoroughly before responding.",
-                "If multiple documents are returned, synthesize the information coherently.",
-                "Provide context-rich answers from indexed documents with specific citations.",
-                "Include relevance scores and source metadata when available.",
-                "Focus on comprehensive knowledge base coverage.",
-                "Always cite sources with metadata when available.",
-                "If no relevant information is found, clearly state this and explain why.",
+                "Search the knowledge base using the search_knowledge_base tool for relevant stored information.",
+                "Focus on finding the MOST relevant documents rather than all possible matches.",
+                "Provide concise, focused answers based on the best matching documents.",
+                "If you find highly relevant information, prioritize quality over quantity.",
+                "Include specific citations and source metadata when available.",
+                "If no highly relevant information is found, clearly state this - don't force connections.",
+                "Remember that web search will complement your findings with fresh information.",
                 "IMPORTANT: Always respond in the same language as the user's query.",
                 "If you receive a language instruction at the beginning of the message, follow it strictly.",
                 "Maintain the same language throughout your entire response."

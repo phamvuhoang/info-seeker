@@ -511,22 +511,35 @@ class MultiAgentSearchTeam:
                                 logger.info(f"Parsed {len(knowledge_docs)} documents from knowledge base search")
 
                                 for doc in knowledge_docs:
-                                    # Extract document information
-                                    doc_title = doc.get('name', doc.get('meta_data', {}).get('title', 'Source from DB'))
-                                    doc_url = doc.get('meta_data', {}).get('url', '')
-                                    doc_content = doc.get('content', '')[:300]
-                                    if len(doc.get('content', '')) > 300:
-                                        doc_content += "..."
+                                    # Extract document information with better fallbacks
+                                    meta_data = doc.get('meta_data', {})
+                                    doc_title = (
+                                        meta_data.get('title') or
+                                        doc.get('name') or
+                                        f"Knowledge Base Document"
+                                    )
+                                    doc_url = meta_data.get('url', '')
+                                    doc_source = meta_data.get('source', 'Knowledge Base')
 
-                                    # Use reranking_score if available, otherwise use a default high score for DB sources
-                                    relevance_score = doc.get('reranking_score', 0.9)
+                                    # Get content with better formatting
+                                    full_content = doc.get('content', '')
+                                    if len(full_content) > 200:
+                                        doc_content = full_content[:200] + "..."
+                                    else:
+                                        doc_content = full_content
+
+                                    # Use reranking_score if available, otherwise use a more moderate score for DB sources
+                                    relevance_score = doc.get('reranking_score', 0.85)
 
                                     all_sources.append({
                                         "title": doc_title,
                                         "url": doc_url,
                                         "content": doc_content,
                                         "relevance_score": relevance_score,
-                                        "source_type": "knowledge_base"
+                                        "source_type": "knowledge_base",
+                                        "source": doc_source,
+                                        "created_at": meta_data.get('created_at', ''),
+                                        "document_id": doc.get('id', '')
                                     })
 
                             except (json.JSONDecodeError, Exception) as e:
@@ -567,13 +580,61 @@ class MultiAgentSearchTeam:
                         all_sources.append({
                             "title": f"Source from search",
                             "url": url,
-                            "content": "",
+                            "content": "Web search result - click URL for full content",
                             "relevance_score": 0.8,
                             "source_type": "extracted"
                         })
 
-        logger.info(f"Extracted {len(all_sources)} total sources: {sum(1 for s in all_sources if s['source_type'] == 'knowledge_base')} from DB, {sum(1 for s in all_sources if s['source_type'] in ['web_search', 'extracted'])} from web")
-        return all_sources
+        # Balance sources to prevent DB sources from dominating
+        db_sources = [s for s in all_sources if s['source_type'] == 'knowledge_base']
+        web_sources = [s for s in all_sources if s['source_type'] in ['web_search', 'extracted']]
+
+        logger.info(f"Before balancing: {len(db_sources)} DB sources, {len(web_sources)} web sources")
+
+        # Apply source balancing rules
+        balanced_sources = self._balance_sources(db_sources, web_sources)
+
+        logger.info(f"After balancing: {len([s for s in balanced_sources if s['source_type'] == 'knowledge_base'])} DB sources, {len([s for s in balanced_sources if s['source_type'] in ['web_search', 'extracted']])} web sources")
+        return balanced_sources
+
+    def _balance_sources(self, db_sources: List[Dict[str, Any]], web_sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Balance DB and web sources to ensure diversity"""
+
+        # Sort sources by relevance score (descending)
+        db_sources_sorted = sorted(db_sources, key=lambda x: x.get('relevance_score', 0), reverse=True)
+        web_sources_sorted = sorted(web_sources, key=lambda x: x.get('relevance_score', 0), reverse=True)
+
+        # Define balancing rules from settings
+        max_total_sources = settings.max_total_sources
+        max_db_sources = settings.max_db_sources
+        min_web_sources = settings.min_web_sources
+
+        balanced_sources = []
+
+        # Always prioritize some web sources for freshness
+        if web_sources_sorted:
+            web_to_include = min(len(web_sources_sorted), max(min_web_sources, max_total_sources - max_db_sources))
+            balanced_sources.extend(web_sources_sorted[:web_to_include])
+            logger.info(f"Added {web_to_include} web sources for freshness")
+
+        # Add DB sources up to the limit
+        if db_sources_sorted:
+            remaining_slots = max_total_sources - len(balanced_sources)
+            db_to_include = min(len(db_sources_sorted), min(max_db_sources, remaining_slots))
+            balanced_sources.extend(db_sources_sorted[:db_to_include])
+            logger.info(f"Added {db_to_include} DB sources for relevance")
+
+        # If we still have slots and more web sources, fill them
+        if len(balanced_sources) < max_total_sources and len(web_sources_sorted) > min_web_sources:
+            remaining_slots = max_total_sources - len(balanced_sources)
+            additional_web = web_sources_sorted[min_web_sources:min_web_sources + remaining_slots]
+            balanced_sources.extend(additional_web)
+            logger.info(f"Added {len(additional_web)} additional web sources")
+
+        # Sort final results by relevance score
+        balanced_sources.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+
+        return balanced_sources
 
     async def _initialize_search_session(self, query: str):
         """Initialize the search session"""

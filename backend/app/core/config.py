@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     hybrid_search_weight_rag: float = 0.6
     hybrid_search_weight_web: float = 0.4
 
+    # Source balancing settings
+    max_total_sources: int = 8  # Maximum sources to display
+    max_db_sources: int = 3     # Maximum DB sources to prevent domination
+    min_web_sources: int = 2    # Minimum web sources for freshness
+
     # Performance settings
     redis_cache_ttl: int = 3600  # 1 hour
     vector_search_cache_ttl: int = 1800  # 30 minutes

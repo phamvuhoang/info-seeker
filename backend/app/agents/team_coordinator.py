@@ -216,12 +216,18 @@ class MultiAgentSearchTeam:
                     # Wait for both to complete
                     rag_result, web_result = await asyncio.gather(rag_task, web_task, return_exceptions=True)
 
-                    # Handle exceptions
+                    # Handle exceptions with better error categorization
                     if isinstance(rag_result, Exception):
                         await self._broadcast_progress("RAG Specialist", "failed", f"RAG search failed: {str(rag_result)}")
                         rag_result = None
                     if isinstance(web_result, Exception):
-                        await self._broadcast_progress("Web Search Specialist", "failed", f"Web search failed: {str(web_result)}")
+                        error_msg = str(web_result)
+                        if "Ratelimit" in error_msg or "rate limit" in error_msg.lower():
+                            await self._broadcast_progress("Web Search Specialist", "rate_limited", "Web search temporarily rate limited - using available sources")
+                            logger.warning(f"Web search rate limited: {error_msg}")
+                        else:
+                            await self._broadcast_progress("Web Search Specialist", "failed", f"Web search failed: {error_msg}")
+                            logger.error(f"Web search failed: {error_msg}")
                         web_result = None
 
                     # Combine results for synthesis

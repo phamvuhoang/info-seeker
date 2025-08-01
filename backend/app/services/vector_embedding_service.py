@@ -204,13 +204,31 @@ class VectorEmbeddingService:
                 documents.append(doc)
                 document_ids.append(doc.id)
             
-            # Store documents in vector database
-            if hasattr(self.vector_db, 'ainsert'):
+            # Store documents in vector database using upsert to handle duplicates
+            if hasattr(self.vector_db, 'aupsert'):
+                logger.debug("Using async upsert method")
+                await self.vector_db.aupsert(documents)
+            elif hasattr(self.vector_db, 'upsert'):
+                logger.debug("Using sync upsert method with asyncio.to_thread")
+                await asyncio.to_thread(self.vector_db.upsert, documents)
+            elif hasattr(self.vector_db, 'ainsert'):
                 logger.debug("Using async insert method")
-                await self.vector_db.ainsert(documents)
+                try:
+                    await self.vector_db.ainsert(documents)
+                except Exception as e:
+                    if "duplicate key" in str(e).lower() or "unique constraint" in str(e).lower():
+                        logger.warning(f"Document already exists, skipping: {e}")
+                        return document_ids
+                    raise
             elif hasattr(self.vector_db, 'insert'):
                 logger.debug("Using sync insert method with asyncio.to_thread")
-                await asyncio.to_thread(self.vector_db.insert, documents)
+                try:
+                    await asyncio.to_thread(self.vector_db.insert, documents)
+                except Exception as e:
+                    if "duplicate key" in str(e).lower() or "unique constraint" in str(e).lower():
+                        logger.warning(f"Document already exists, skipping: {e}")
+                        return document_ids
+                    raise
             else:
                 logger.error("Vector database has no insert method available")
                 raise RuntimeError("Vector database has no insert method available")

@@ -41,9 +41,9 @@ class Settings(BaseSettings):
     websocket_heartbeat_interval: int = 30
     max_websocket_connections: int = 100
 
-    # Search settings - Optimized for speed
-    max_rag_results: int = 5  # Reduced for faster processing
-    max_web_results: int = 5  # Reduced for faster processing
+    # Search settings - Optimized for speed and rate limiting
+    max_rag_results: int = 3  # Reduced for faster processing and balance
+    max_web_results: int = 3  # Reduced to avoid rate limiting
     hybrid_search_weight_rag: float = 0.6
     hybrid_search_weight_web: float = 0.4
 
@@ -56,11 +56,12 @@ class Settings(BaseSettings):
     redis_cache_ttl: int = 3600  # 1 hour
     vector_search_cache_ttl: int = 1800  # 30 minutes
 
-    # Connection settings
-    http_connection_pool_size: int = 100
+    # Connection settings - Optimized to reduce resource leaks
+    http_connection_pool_size: int = 50  # Reduced to prevent resource leaks
     http_connection_timeout: int = 30
-    database_pool_size: int = 20
+    database_pool_size: int = 10  # Reduced for better resource management
     database_pool_timeout: int = 30
+    max_websocket_connections: int = 50  # Added limit for websocket connections
 
     # Server Configuration
     host: str = "0.0.0.0"

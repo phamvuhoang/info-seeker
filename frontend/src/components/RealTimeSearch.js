@@ -84,7 +84,7 @@ const RealTimeSearch = () => {
       });
 
       // Add reasoning steps for all status changes with details
-      if (status && (status === 'started' || status === 'completed' || status === 'failed' || status === 'processing')) {
+      if (status && (status === 'started' || status === 'completed' || status === 'failed' || status === 'processing' || status === 'rate_limited')) {
         setReasoningSteps(prev => {
           const newStep = {
             id: Date.now() + Math.random(),
@@ -93,7 +93,7 @@ const RealTimeSearch = () => {
             timestamp: timestamp || new Date().toISOString(),
             type: status,
             details: details,
-            important: status === 'started' || status === 'completed' || status === 'failed'
+            important: status === 'started' || status === 'completed' || status === 'failed' || status === 'rate_limited'
           };
 
           const newSteps = [...prev, newStep];
@@ -568,11 +568,13 @@ const RealTimeSearch = () => {
               <div key={step.id} className={`flex items-start gap-3 p-3 rounded-lg border ${
                 step.type === 'completed' ? 'bg-green-50 border-green-200' :
                 step.type === 'failed' ? 'bg-red-50 border-red-200' :
+                step.type === 'rate_limited' ? 'bg-yellow-50 border-yellow-200' :
                 'bg-blue-50 border-blue-200'
               }`}>
                 <div className={`w-2 h-2 rounded-full mt-2 flex-shrink-0 ${
                   step.type === 'completed' ? 'bg-green-500' :
                   step.type === 'failed' ? 'bg-red-500' :
+                  step.type === 'rate_limited' ? 'bg-yellow-500' :
                   'bg-blue-500'
                 }`}></div>
                 <div className="flex-1 min-w-0">
@@ -646,16 +648,34 @@ const RealTimeSearch = () => {
             {sources.map((source, index) => (
               <div key={index} className="p-4 bg-gray-50 rounded-lg border">
                 <div className="font-medium text-gray-900 mb-1">{source.title}</div>
-                {source.url && (
-                  <a 
-                    href={source.url} 
-                    target="_blank" 
+
+                {/* Content preview */}
+                {source.content && (
+                  <p className="text-gray-700 text-sm mb-2 leading-relaxed">
+                    {source.content}
+                  </p>
+                )}
+
+                {/* URL for web sources */}
+                {source.url && source.source_type !== 'knowledge_base' && (
+                  <a
+                    href={source.url}
+                    target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-600 hover:text-blue-800 text-sm break-all"
+                    className="text-blue-600 hover:text-blue-800 text-sm break-all block mb-2"
                   >
                     {source.url}
                   </a>
                 )}
+
+                {/* Additional info for DB sources */}
+                {source.source_type === 'knowledge_base' && (
+                  <div className="text-xs text-gray-500 mb-2">
+                    {source.source && <span>Source: {source.source}</span>}
+                    {source.document_id && <span className="ml-2">ID: {source.document_id.substring(0, 8)}...</span>}
+                  </div>
+                )}
+
                 <div className="flex items-center gap-4 mt-2 text-sm text-gray-600">
                   {source.relevance_score && (
                     <span>Relevance: {(source.relevance_score * 100).toFixed(1)}%</span>

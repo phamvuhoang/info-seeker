@@ -41,10 +41,9 @@ class VectorEmbeddingService:
             )
 
             # Initialize PgVector database
-            # Convert database URL format for PgVector compatibility
+            # Use the database URL as-is since we have psycopg available
             db_url = settings.database_url
-            if db_url.startswith("postgresql+psycopg://"):
-                db_url = db_url.replace("postgresql+psycopg://", "postgresql+psycopg2://")
+            logger.info(f"Initializing PgVector with URL: {db_url}")
 
             self.vector_db = PgVector(
                 table_name=settings.vector_table_name,
@@ -206,7 +205,15 @@ class VectorEmbeddingService:
                 document_ids.append(doc.id)
             
             # Store documents in vector database
-            await asyncio.to_thread(self.vector_db.insert, documents)
+            if hasattr(self.vector_db, 'ainsert'):
+                logger.debug("Using async insert method")
+                await self.vector_db.ainsert(documents)
+            elif hasattr(self.vector_db, 'insert'):
+                logger.debug("Using sync insert method with asyncio.to_thread")
+                await asyncio.to_thread(self.vector_db.insert, documents)
+            else:
+                logger.error("Vector database has no insert method available")
+                raise RuntimeError("Vector database has no insert method available")
             
             logger.info(f"Stored document with {len(chunks)} chunks, IDs: {document_ids[:3]}...")
             return document_ids
@@ -276,48 +283,86 @@ class VectorEmbeddingService:
             return []
 
         try:
-            # Perform vector search
-            results = await asyncio.to_thread(
-                self.vector_db.search, 
-                query, 
-                limit=limit, 
-                filters=filters
-            )
-            
+            logger.debug(f"Starting similarity search for query: {query[:100]}... (limit: {limit})")
+
+            # Check if vector_db has async search method
+            if hasattr(self.vector_db, 'asearch'):
+                logger.debug("Using async search method")
+                results = await self.vector_db.asearch(query, limit=limit, filters=filters)
+            elif hasattr(self.vector_db, 'search'):
+                logger.debug("Using sync search method with asyncio.to_thread")
+                results = await asyncio.to_thread(
+                    self.vector_db.search,
+                    query,
+                    limit=limit,
+                    filters=filters
+                )
+            else:
+                logger.error("Vector database has no search method available")
+                raise RuntimeError("Vector database has no search method available")
+
+            logger.debug(f"Raw search results count: {len(results) if results else 0}")
+
             # Convert results to dictionary format
             search_results = []
-            for result in results:
-                # Handle different result structures from agno
-                if hasattr(result, 'document'):
-                    # Standard Document result
-                    document = result.document
-                    content = document.content
-                    metadata = document.meta_data
-                    doc_id = document.id
-                elif hasattr(result, 'content'):
-                    # Direct Document object
-                    content = result.content
-                    metadata = getattr(result, 'meta_data', {})
-                    doc_id = getattr(result, 'id', None)
-                else:
-                    # Fallback - try to extract from result directly
-                    content = str(result)
-                    metadata = {}
-                    doc_id = None
+            for i, result in enumerate(results or []):
+                try:
+                    # Handle different result structures from agno
+                    if hasattr(result, 'document'):
+                        # Standard SearchResult with Document
+                        document = result.document
+                        content = document.content
+                        metadata = getattr(document, 'meta_data', {})
+                        doc_id = getattr(document, 'id', None)
+                        # Try different ways to get similarity score
+                        similarity = getattr(result, 'similarity', None)
+                        if similarity is None:
+                            similarity = getattr(result, 'score', None)
+                        if similarity is None:
+                            similarity = getattr(result, 'distance', None)
+                            if similarity is not None:
+                                # Convert distance to similarity (assuming cosine distance)
+                                similarity = 1.0 - similarity
+                        if similarity is None:
+                            similarity = 0.5  # Default similarity
+                    elif hasattr(result, 'content'):
+                        # Direct Document object
+                        content = result.content
+                        metadata = getattr(result, 'meta_data', {})
+                        doc_id = getattr(result, 'id', None)
+                        # Try to get similarity from the result object
+                        similarity = getattr(result, 'similarity', None)
+                        if similarity is None:
+                            similarity = getattr(result, 'score', None)
+                        if similarity is None:
+                            similarity = 0.5  # Default similarity
+                    else:
+                        # Fallback - try to extract from result directly
+                        content = str(result)
+                        metadata = {}
+                        doc_id = None
+                        similarity = 0.0
+                        logger.warning(f"Unknown result structure for result {i}: {type(result)}")
+                        logger.warning(f"Result attributes: {dir(result)}")
 
-                search_result = {
-                    'content': content,
-                    'metadata': metadata,
-                    'similarity_score': getattr(result, 'similarity', 0.0),
-                    'document_id': doc_id
-                }
-                search_results.append(search_result)
-            
-            logger.info(f"Found {len(search_results)} similar documents for query: {query[:50]}...")
+                    search_result = {
+                        'content': content,
+                        'metadata': metadata,
+                        'similarity_score': similarity,
+                        'document_id': doc_id
+                    }
+                    search_results.append(search_result)
+                    logger.debug(f"Processed result {i+1}: similarity={similarity:.3f}, content_length={len(content)}")
+
+                except Exception as e:
+                    logger.error(f"Error processing search result {i}: {e}")
+                    continue
+
+            logger.info(f"Successfully processed {len(search_results)} similar documents for query: {query[:50]}...")
             return search_results
-            
+
         except Exception as e:
-            logger.error(f"Failed to perform similarity search: {e}")
+            logger.error(f"Failed to perform similarity search: {e}", exc_info=True)
             raise
     
     async def get_document_by_id(self, document_id: str) -> Optional[Dict[str, Any]]:

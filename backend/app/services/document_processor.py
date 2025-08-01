@@ -2,50 +2,22 @@ from typing import List, Dict, Any
 from datetime import datetime, timezone
 import hashlib
 import re
-from ..core.vector_db import VectorDatabaseManager
 from ..core.config import settings
 
 
 class DocumentProcessor:
-    def __init__(self, vector_db_manager: VectorDatabaseManager = None):
-        from ..core.vector_db import vector_db_manager as default_manager
-        self.vector_db = vector_db_manager or default_manager
-        self.chunk_size = settings.max_chunk_size
-        self.chunk_overlap = settings.chunk_overlap
+    """
+    Document processor for cleaning and validating search results.
+
+    Note: Document storage and chunking functionality has been moved to
+    vector_embedding_service.py which uses agno library patterns.
+    This class now focuses on search result processing and validation.
+    """
+
+    def __init__(self):
         self.min_content_length = 50
         self.max_content_length = 10000
-    
-    async def process_and_index_content(self, content: str, source_metadata: Dict[str, Any]) -> List[str]:
-        """Process content into chunks and index them"""
-        
-        # Clean and prepare content
-        cleaned_content = self._clean_content(content)
-        
-        if len(cleaned_content) < self.min_content_length:
-            return []
-        
-        # Split into chunks
-        chunks = self._split_into_chunks(cleaned_content)
-        
-        # Index each chunk
-        document_ids = []
-        for i, chunk in enumerate(chunks):
-            chunk_metadata = {
-                **source_metadata,
-                'chunk_index': i,
-                'total_chunks': len(chunks),
-                'content_hash': hashlib.md5(chunk.encode()).hexdigest(),
-                'processed_at': datetime.now(timezone.utc).isoformat()
-            }
-            
-            try:
-                doc_id = await self.vector_db.index_document(chunk, chunk_metadata)
-                document_ids.append(doc_id)
-            except Exception as e:
-                print(f"Error indexing chunk {i}: {e}")
-                continue
-        
-        return document_ids
+
     
     def process_search_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Process and clean search results"""
@@ -66,56 +38,9 @@ class DocumentProcessor:
         
         return processed_results
     
-    def _clean_content(self, content: str) -> str:
-        """Clean and normalize content"""
-        if not content:
-            return ""
-            
-        # Remove excessive whitespace
-        content = ' '.join(content.split())
-        
-        # Remove special characters that might interfere with search
-        content = content.replace('\x00', '')
-        
-        # Remove very long lines that might be code or data
-        lines = content.split('\n')
-        cleaned_lines = []
-        for line in lines:
-            if len(line) < 500:  # Skip very long lines
-                cleaned_lines.append(line)
-        
-        content = '\n'.join(cleaned_lines)
-        
-        return content.strip()
-    
-    def _split_into_chunks(self, content: str) -> List[str]:
-        """Split content into overlapping chunks"""
-        if len(content) <= self.chunk_size:
-            return [content]
-        
-        chunks = []
-        start = 0
-        
-        while start < len(content):
-            end = start + self.chunk_size
-            
-            # Try to break at sentence boundary
-            if end < len(content):
-                # Look for sentence endings
-                for i in range(end, max(start + self.chunk_size - 200, start), -1):
-                    if content[i] in '.!?':
-                        end = i + 1
-                        break
-            
-            chunk = content[start:end].strip()
-            if chunk and len(chunk) >= self.min_content_length:
-                chunks.append(chunk)
-            
-            start = end - self.chunk_overlap
-            if start >= len(content):
-                break
-        
-        return chunks
+    # NOTE: _clean_content() and _split_into_chunks() methods have been moved to
+    # vector_embedding_service.py which provides more comprehensive functionality
+    # using agno library patterns.
     
     def _clean_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Clean individual search result"""
@@ -125,9 +50,11 @@ class DocumentProcessor:
         title = cleaned.get('title', '').strip()
         cleaned['title'] = title[:200] if title else 'Untitled'
         
-        # Clean content
+        # Clean content (basic cleaning)
         content = cleaned.get('content', '').strip()
-        cleaned['content'] = self._clean_content(content)
+        # Remove excessive whitespace and null characters
+        content = ' '.join(content.split()).replace('\x00', '')
+        cleaned['content'] = content
         
         # Ensure URL is present
         if not cleaned.get('url'):
@@ -207,5 +134,5 @@ class DocumentProcessor:
 
 
 # Initialize document processor
-from ..core.vector_db import vector_db_manager
-document_processor = DocumentProcessor(vector_db_manager)
+# Note: Document storage functionality has been moved to vector_embedding_service
+document_processor = DocumentProcessor()

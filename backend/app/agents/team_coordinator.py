@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from ..core.config import settings
 from ..services.sse_manager import progress_manager
-from ..services.document_processor import document_processor
+from ..services.document_processor import document_processor  # For search result processing only
 from ..services.database_service import database_service
 from ..services.vector_embedding_service import vector_embedding_service
 from ..utils.performance_monitor import performance_monitor

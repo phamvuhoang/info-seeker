@@ -1,13 +1,16 @@
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import time
 import uuid
 import logging
 from ..models.search import SearchQuery, SearchResponse, SearchResult
 from ..agents.search_agent import create_search_agent
 from ..agents.team_coordinator import create_search_team
+from ..agents.rag_agent import create_rag_agent
 from ..services.content_processor import ContentProcessor
-from pydantic import BaseModel
+from ..services.database_service import database_service
+from ..services.vector_embedding_service import vector_embedding_service
+from pydantic import BaseModel, Field
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +32,44 @@ class HybridSearchResponse(BaseModel):
     status: str
     session_id: str
     message: str
+
+
+class SearchFeedbackRequest(BaseModel):
+    session_id: str
+    query: str
+    rating: int = Field(..., ge=1, le=5, description="Rating from 1 to 5")
+    feedback_text: Optional[str] = None
+    sources_helpful: Optional[List[str]] = None
+
+
+class RAGSearchRequest(BaseModel):
+    query: str
+    max_results: int = Field(10, description="Maximum number of results to return")
+    filters: Optional[Dict[str, Any]] = Field(None, description="Optional filters for search")
+    include_metadata: bool = Field(True, description="Include metadata in results")
+
+
+class RAGSearchResult(BaseModel):
+    content: str
+    similarity_score: float
+    combined_score: Optional[float] = None
+    metadata: Dict[str, Any]
+    source_type: str
+    title: str
+    url: Optional[str] = None
+    indexed_at: Optional[str] = None
+    confidence_score: Optional[float] = None
+    language: Optional[str] = None
+
+
+class RAGSearchResponse(BaseModel):
+    status: str
+    message: str
+    query: str
+    results: List[RAGSearchResult]
+    total_results: int
+    filters_applied: Optional[Dict[str, Any]] = None
+    processing_time: float
 
 
 @router.post("/search", response_model=SearchResponse)
@@ -80,6 +121,20 @@ async def search(
             sources=sources,
             processing_time=processing_time,
             session_id=session_id
+        )
+
+        # Save search to database
+        await database_service.save_search_history(
+            session_id=session_id,
+            query=query.query,
+            response=answer,
+            sources=[{
+                'title': source.title,
+                'url': source.url,
+                'source': source.source,
+                'relevance_score': source.relevance_score
+            } for source in sources],
+            processing_time=processing_time
         )
 
         logger.info(f"Search completed in {processing_time:.2f}s for session: {session_id}")
@@ -152,5 +207,97 @@ async def execute_hybrid_search(
 @router.get("/search/history/{session_id}")
 async def get_search_history(session_id: str):
     """Get search history for a session"""
-    # TODO: Implement search history retrieval
-    return {"session_id": session_id, "history": []}
+    try:
+        history = await database_service.get_search_history(session_id)
+        return {"session_id": session_id, "history": history}
+    except Exception as e:
+        logger.error(f"Failed to get search history for session {session_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve search history: {str(e)}")
+
+
+@router.post("/search/feedback")
+async def submit_search_feedback(feedback: SearchFeedbackRequest):
+    """Submit feedback for a search result"""
+    try:
+        success = await database_service.save_search_feedback(
+            session_id=feedback.session_id,
+            query=feedback.query,
+            rating=feedback.rating,
+            feedback_text=feedback.feedback_text,
+            sources_helpful=feedback.sources_helpful
+        )
+
+        if success:
+            return {"status": "success", "message": "Feedback saved successfully"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to save feedback")
+
+    except Exception as e:
+        logger.error(f"Failed to save search feedback: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save feedback: {str(e)}")
+
+
+@router.post("/search/rag", response_model=RAGSearchResponse)
+async def rag_similarity_search(request: RAGSearchRequest):
+    """RAG similarity search using vector embeddings"""
+    start_time = time.time()
+
+    try:
+        logger.info(f"RAG similarity search for query: '{request.query}'")
+
+        # Perform similarity search using vector embedding service
+        results = await vector_embedding_service.similarity_search(
+            query=request.query,
+            limit=request.max_results,
+            filters=request.filters
+        )
+
+        # Convert results to response format
+        rag_results = []
+        for result in results:
+            rag_result = RAGSearchResult(
+                content=result["content"],
+                similarity_score=result["similarity_score"],
+                combined_score=result.get("combined_score"),
+                metadata=result["metadata"] if request.include_metadata else {},
+                source_type=result["metadata"].get("source_type", "unknown"),
+                title=result["metadata"].get("title", "Untitled"),
+                url=result["metadata"].get("url"),
+                indexed_at=result["metadata"].get("indexed_at"),
+                confidence_score=result["metadata"].get("confidence_score"),
+                language=result["metadata"].get("language")
+            )
+            rag_results.append(rag_result)
+
+        processing_time = time.time() - start_time
+
+        response = RAGSearchResponse(
+            status="success",
+            message=f"Found {len(rag_results)} relevant documents",
+            query=request.query,
+            results=rag_results,
+            total_results=len(rag_results),
+            filters_applied=request.filters,
+            processing_time=processing_time
+        )
+
+        logger.info(f"RAG search completed in {processing_time:.2f}s, found {len(rag_results)} results")
+        return response
+
+    except Exception as e:
+        logger.error(f"RAG similarity search failed for query '{request.query}': {str(e)}")
+        raise HTTPException(status_code=500, detail=f"RAG search failed: {str(e)}")
+
+
+@router.get("/search/rag/stats")
+async def get_rag_database_stats():
+    """Get statistics about the RAG vector database"""
+    try:
+        stats = await vector_embedding_service.get_database_stats()
+        return {
+            "status": "success",
+            "stats": stats
+        }
+    except Exception as e:
+        logger.error(f"Failed to get RAG database stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get database stats: {str(e)}")

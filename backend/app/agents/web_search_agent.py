@@ -6,10 +6,14 @@ from datetime import datetime, timezone
 import asyncio
 import json
 import re
+import logging
 from ..core.config import settings
 from ..services.sse_manager import progress_manager
 from ..services.document_processor import document_processor
+from ..services.vector_embedding_service import vector_embedding_service
 from .base_streaming_agent import BaseStreamingAgent
+
+logger = logging.getLogger(__name__)
 
 
 class WebSearchAgent(BaseStreamingAgent):
@@ -66,37 +70,120 @@ class WebSearchAgent(BaseStreamingAgent):
         self.session_id = session_id
 
     async def search_and_process(self, query: str) -> Dict[str, Any]:
-        """Enhanced search method that processes and stores results"""
+        """Enhanced search method that processes and stores results with detailed logging"""
+        search_start_time = datetime.now()
+
         try:
+            logger.info(f"Web Search Agent starting search for query: {query[:100]}...")
+
+            # Broadcast detailed progress
+            if self.session_id:
+                await progress_manager.broadcast_progress(
+                    self.session_id,
+                    {
+                        "agent": self.name,
+                        "status": "started",
+                        "message": f"Searching web for: {query[:50]}...",
+                        "details": {
+                            "query_length": len(query),
+                            "search_engine": "DuckDuckGo",
+                            "max_results": 5
+                        }
+                    }
+                )
+
             # Run the agent to perform web search
+            logger.info("Executing web search using DuckDuckGo tools...")
             response = await self.arun(f"Search for comprehensive information about: {query}")
 
+            search_time = (datetime.now() - search_start_time).total_seconds()
+            logger.info(f"Web search completed in {search_time:.2f}s")
+
             if response and hasattr(response, 'content'):
+                logger.info(f"Web search response received, content length: {len(response.content)}")
+
                 # Extract URLs and content from the response
                 search_results = self._extract_search_results(response.content, query)
+                logger.info(f"Extracted {len(search_results)} search results from response")
 
                 # Store results for future use (async, don't wait)
                 if search_results:
+                    logger.info(f"Storing {len(search_results)} web search results for future use")
                     asyncio.create_task(self._store_web_results(search_results, query))
+
+                # Broadcast completion with details
+                if self.session_id:
+                    await progress_manager.broadcast_progress(
+                        self.session_id,
+                        {
+                            "agent": self.name,
+                            "status": "completed",
+                            "message": f"Web search completed. Found {len(search_results)} results in {search_time:.2f}s",
+                            "details": {
+                                "results_count": len(search_results),
+                                "search_time": f"{search_time:.2f}s",
+                                "response_length": len(response.content),
+                                "urls_found": len([r for r in search_results if r.get('url')])
+                            },
+                            "result_preview": f"Found results from {len(search_results)} sources" if search_results else "No results found"
+                        }
+                    )
 
                 return {
                     "content": response.content,
                     "search_results": search_results,
-                    "status": "success"
+                    "status": "success",
+                    "search_time": search_time,
+                    "results_count": len(search_results)
                 }
             else:
+                logger.warning("Web search returned no response or empty content")
+
+                if self.session_id:
+                    await progress_manager.broadcast_progress(
+                        self.session_id,
+                        {
+                            "agent": self.name,
+                            "status": "completed",
+                            "message": f"Web search completed but found no results in {search_time:.2f}s",
+                            "details": {
+                                "search_time": f"{search_time:.2f}s",
+                                "results_count": 0
+                            }
+                        }
+                    )
+
                 return {
                     "content": "No search results found",
                     "search_results": [],
-                    "status": "no_results"
+                    "status": "no_results",
+                    "search_time": search_time
                 }
 
         except Exception as e:
-            print(f"Web search error: {e}")
+            search_time = (datetime.now() - search_start_time).total_seconds()
+            error_msg = f"Web search failed after {search_time:.2f}s: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+
+            if self.session_id:
+                await progress_manager.broadcast_progress(
+                    self.session_id,
+                    {
+                        "agent": self.name,
+                        "status": "failed",
+                        "message": error_msg,
+                        "details": {
+                            "search_time": f"{search_time:.2f}s",
+                            "error_type": type(e).__name__
+                        }
+                    }
+                )
+
             return {
-                "content": f"Web search failed: {str(e)}",
+                "content": error_msg,
                 "search_results": [],
-                "status": "error"
+                "status": "error",
+                "search_time": search_time
             }
 
     def _extract_search_results(self, content: str, query: str) -> List[Dict[str, Any]]:
@@ -177,7 +264,7 @@ class WebSearchAgent(BaseStreamingAgent):
                     "extracted_at": result.get("extracted_at", datetime.now(timezone.utc).isoformat())
                 }
 
-                await document_processor.process_and_index_content(content, metadata)
+                await vector_embedding_service.store_document(content, metadata)
 
             print(f"Stored {len(results)} web search results for query: {query[:50]}...")
 

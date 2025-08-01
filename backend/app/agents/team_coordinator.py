@@ -9,7 +9,9 @@ import time
 from datetime import datetime
 from ..core.config import settings
 from ..services.sse_manager import progress_manager
-from ..services.document_processor import document_processor
+from ..services.document_processor import document_processor  # For search result processing only
+from ..services.database_service import database_service
+from ..services.vector_embedding_service import vector_embedding_service
 from ..utils.performance_monitor import performance_monitor
 from ..utils.language_detector import language_detector
 from .rag_agent import create_rag_agent
@@ -17,6 +19,9 @@ from .web_search_agent import create_web_search_agent
 from .synthesis_agent import create_synthesis_agent
 from .validation_agent import create_validation_agent
 from .answer_agent import create_answer_agent
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class MultiAgentSearchTeam:
@@ -174,6 +179,19 @@ class MultiAgentSearchTeam:
             self.start_time = time.time()
 
             try:
+                # Save agent workflow session start
+                await database_service.save_agent_workflow_session(
+                    session_id=self.session_id,
+                    workflow_name="hybrid_search",
+                    status="running",
+                    metadata={
+                        "query": query,
+                        "include_rag": include_rag,
+                        "include_web": include_web,
+                        "max_results": max_results
+                    }
+                )
+
                 # Detect query language and set language instruction
                 self.detected_language, confidence = language_detector.detect_language(query)
                 self.language_instruction = language_detector.get_language_instruction(self.detected_language)
@@ -222,49 +240,113 @@ class MultiAgentSearchTeam:
                 else:
                     combined_context = f"Query: {query}\n\nNo search sources enabled."
 
-                # Run synthesis, validation, and answer generation in sequence (they depend on each other)
-                synthesis_result = await self._run_agent_with_progress(
-                    self.synthesis_agent, combined_context, "Information Synthesizer")
-
-                validation_result = await self._run_agent_with_progress(
-                    self.validation_agent, synthesis_result.content if synthesis_result else combined_context,
-                    "Information Validator")
-
-                final_answer = await self._run_agent_with_progress(
-                    self.answer_agent, validation_result.content if validation_result else combined_context,
-                    "Answer Generator")
-
-                # Extract sources and compile final result
+                # Extract sources first (needed for validation)
                 all_sources = self._extract_sources_from_results([
                     rag_result if include_rag else None,
                     web_result if include_web else None
                 ])
 
+                # Run synthesis, validation, and answer generation in sequence (they depend on each other)
+                logger.info("DEBUG: About to run synthesis agent")
+                synthesis_result = await self._run_agent_with_progress(
+                    self.synthesis_agent, combined_context, "Information Synthesizer")
+                logger.info("DEBUG: Synthesis completed, about to run validation")
+
+                # Use the validation agent's specialized method instead of generic arun
+                await self._broadcast_progress("Information Validator", "started", "Information Validator is processing...")
+                try:
+                    logger.info(f"DEBUG: Calling validation agent with {len(all_sources)} sources")
+                    validation_result = await self.validation_agent.validate_information(
+                        synthesis=synthesis_result.content if synthesis_result else combined_context,
+                        sources=all_sources,
+                        query=query
+                    )
+                    logger.info(f"DEBUG: Validation result type: {type(validation_result)}")
+                    logger.info(f"DEBUG: Validation result keys: {validation_result.keys() if isinstance(validation_result, dict) else 'Not a dict'}")
+                    if isinstance(validation_result, dict) and "analysis" in validation_result:
+                        logger.info(f"DEBUG: Analysis confidence: {validation_result['analysis'].get('confidence_score', 'Not found')}")
+                    await self._broadcast_progress("Information Validator", "completed", "Information Validator completed successfully")
+                    logger.info("DEBUG: Validation completed successfully")
+                except Exception as e:
+                    logger.error(f"DEBUG: Validation error: {e}")
+                    await self._broadcast_progress("Information Validator", "failed", f"Information Validator failed: {str(e)}")
+                    raise e
+
+                logger.info("DEBUG: About to prepare answer context")
+
+                # Prepare context for answer generation including validation results
+                answer_context = combined_context
+                if validation_result and isinstance(validation_result, dict):
+                    if "validation_report" in validation_result:
+                        answer_context += f"\n\nValidation Report:\n{validation_result['validation_report']}"
+                elif validation_result and hasattr(validation_result, 'content'):
+                    answer_context += f"\n\nValidation Report:\n{validation_result.content}"
+
+                final_answer = await self._run_agent_with_progress(
+                    self.answer_agent, answer_context, "Answer Generator")
+
+                # Sources already extracted earlier for validation
+
                 processing_time = time.time() - self.start_time
 
                 # Extract confidence and quality scores from validation and answer results
-                confidence_score = 0.7  # Default
-                quality_score = 0.7     # Default
+                confidence_score = None  # No default - must be calculated
+                quality_score = None     # No default - must be calculated
 
-                # Get confidence from validation result
-                if validation_result and hasattr(validation_result, 'content'):
-                    try:
-                        # Try to extract confidence from validation content
-                        import re
-                        confidence_match = re.search(r'confidence[:\s]+([0-9]*\.?[0-9]+)', validation_result.content.lower())
-                        if confidence_match:
-                            confidence_score = min(max(float(confidence_match.group(1)), 0.1), 0.95)
-                    except:
-                        pass
+                # Get confidence from validation result - access the actual analysis
+                if validation_result:
+                    # Check if validation_result is a dict with analysis
+                    if isinstance(validation_result, dict) and "analysis" in validation_result:
+                        confidence_score = validation_result["analysis"].get("confidence_score")
+                        print(f"Got confidence from validation analysis (dict): {confidence_score}")
+                    # Check if validation_result has analysis attribute
+                    elif hasattr(validation_result, 'analysis') and validation_result.analysis:
+                        confidence_score = validation_result.analysis.get("confidence_score")
+                        print(f"Got confidence from validation analysis (attr): {confidence_score}")
+                    # Fallback: try to extract from content if analysis not available
+                    elif hasattr(validation_result, 'content'):
+                        try:
+                            import re
+                            confidence_match = re.search(r'confidence[:\s]+([0-9]*\.?[0-9]+)', validation_result.content.lower())
+                            if confidence_match:
+                                confidence_score = min(max(float(confidence_match.group(1)), 0.1), 0.95)
+                                print(f"Extracted confidence from content: {confidence_score}")
+                        except Exception as e:
+                            print(f"Error extracting confidence from content: {e}")
+                    # Check if it's a dict with content
+                    elif isinstance(validation_result, dict) and "validation_report" in validation_result:
+                        try:
+                            import re
+                            content = validation_result["validation_report"].lower()
+                            confidence_match = re.search(r'confidence[:\s]+([0-9]*\.?[0-9]+)', content)
+                            if confidence_match:
+                                confidence_score = min(max(float(confidence_match.group(1)), 0.1), 0.95)
+                                print(f"Extracted confidence from dict content: {confidence_score}")
+                        except Exception as e:
+                            print(f"Error extracting confidence from dict content: {e}")
 
-                # Get quality from answer result (if answer agent provides it)
+                # If still no confidence, calculate based on available information
+                if confidence_score is None:
+                    confidence_score = self._calculate_fallback_confidence(all_sources, synthesis_result, validation_result)
+                    print(f"Calculated fallback confidence: {confidence_score}")
+
+                # Get quality from answer result
                 if final_answer and hasattr(final_answer, 'content'):
                     try:
-                        # Calculate quality based on answer characteristics
                         answer_content = final_answer.content
                         quality_score = self._calculate_quality_score(answer_content, all_sources, confidence_score)
-                    except:
-                        pass
+                        print(f"Calculated quality score: {quality_score}")
+                    except Exception as e:
+                        print(f"Error calculating quality score: {e}")
+                        quality_score = confidence_score * 0.8  # Fallback based on confidence
+
+                # Ensure we have valid scores
+                if confidence_score is None:
+                    confidence_score = 0.5
+                    print("Using absolute fallback confidence: 0.5")
+                if quality_score is None:
+                    quality_score = confidence_score * 0.8
+                    print(f"Using fallback quality based on confidence: {quality_score}")
 
                 final_result = {
                     "query": query,
@@ -289,6 +371,23 @@ class MultiAgentSearchTeam:
                 # Store search results for future learning
                 await self._store_search_results(query, final_result, all_sources)
 
+                # Save search to database
+                await database_service.save_search_history(
+                    session_id=self.session_id,
+                    query=query,
+                    response=final_result.get("answer", ""),
+                    sources=all_sources,
+                    processing_time=processing_time
+                )
+
+                # Update workflow session as completed
+                await database_service.save_agent_workflow_session(
+                    session_id=self.session_id,
+                    workflow_name="hybrid_search",
+                    status="completed",
+                    result=final_result
+                )
+
                 # Broadcast final result
                 await self._broadcast_final_result(final_result)
 
@@ -296,13 +395,32 @@ class MultiAgentSearchTeam:
 
             except Exception as e:
                 error_msg = f"Multi-agent search failed: {str(e)}"
+
+                # Update workflow session as failed
+                await database_service.save_agent_workflow_session(
+                    session_id=self.session_id,
+                    workflow_name="hybrid_search",
+                    status="failed",
+                    result={"error": error_msg}
+                )
+
                 await self.progress_manager.broadcast_error(self.session_id, error_msg)
                 raise e
     
     async def _run_agent_with_progress(self, agent, message: str, agent_name: str):
         """Run an agent with optimized progress tracking"""
+        start_time = time.time()
+
         try:
             await self._broadcast_progress(agent_name, "started", f"{agent_name} is processing...")
+
+            # Log agent execution start
+            await database_service.save_agent_execution_log(
+                session_id=self.session_id,
+                agent_name=agent_name,
+                status="started",
+                input_data={"message": message[:500]}  # Truncate long messages
+            )
 
             # Add language instruction to the message
             language_aware_message = f"{self.language_instruction}\n\n{message}"
@@ -310,11 +428,33 @@ class MultiAgentSearchTeam:
             # Run agent without excessive streaming overhead
             result = await agent.arun(language_aware_message)
 
+            execution_time_ms = int((time.time() - start_time) * 1000)
+
+            # Log agent execution completion
+            await database_service.save_agent_execution_log(
+                session_id=self.session_id,
+                agent_name=agent_name,
+                status="completed",
+                output_data={"result": str(result)[:500] if result else ""},  # Truncate long results
+                execution_time_ms=execution_time_ms
+            )
+
             await self._broadcast_progress(agent_name, "completed",
                                          f"{agent_name} completed successfully")
             return result
 
         except Exception as e:
+            execution_time_ms = int((time.time() - start_time) * 1000)
+
+            # Log agent execution failure
+            await database_service.save_agent_execution_log(
+                session_id=self.session_id,
+                agent_name=agent_name,
+                status="failed",
+                error_message=str(e),
+                execution_time_ms=execution_time_ms
+            )
+
             await self._broadcast_progress(agent_name, "failed", f"{agent_name} failed: {str(e)}")
             raise e
 
@@ -363,9 +503,16 @@ class MultiAgentSearchTeam:
                 else:
                     # Fallback to simple URL extraction from content
                     import re
-                    urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+',
+                    # Fixed regex pattern that doesn't include trailing punctuation
+                    urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|(?:%[0-9a-fA-F][0-9a-fA-F]))+(?=[^\w]|$)',
                                     result.content)
+                    # Clean up URLs by removing trailing punctuation
+                    cleaned_urls = []
                     for url in urls:
+                        # Remove trailing punctuation like ), ., etc.
+                        url = re.sub(r'[)\].,;!?]+$', '', url)
+                        cleaned_urls.append(url)
+                    for url in cleaned_urls:
                         all_sources.append({
                             "title": f"Source from search",
                             "url": url,
@@ -442,10 +589,54 @@ class MultiAgentSearchTeam:
 
         return min(max(quality_score, 0.1), 0.95)
 
+    def _calculate_fallback_confidence(self, sources: List[Dict[str, Any]], synthesis_result=None, validation_result=None) -> float:
+        """Calculate confidence when validation analysis is not available"""
+        confidence = 0.3  # Start with low base confidence
+
+        # Factor in source count and quality
+        if sources:
+            source_count = len(sources)
+            if source_count >= 3:
+                confidence += 0.2
+            if source_count >= 5:
+                confidence += 0.1
+
+            # Check for high-quality domains
+            high_quality_count = 0
+            for source in sources:
+                url = source.get('url', '').lower()
+                quality_domains = [
+                    'wikipedia.org', 'arxiv.org', 'nature.com', 'sciencedirect.com',
+                    'pubmed.ncbi.nlm.nih.gov', 'scholar.google.com', 'jstor.org',
+                    'reuters.com', 'bbc.com', 'cnn.com', 'nytimes.com', 'washingtonpost.com',
+                    'gov', 'edu', 'org'
+                ]
+                if any(domain in url for domain in quality_domains):
+                    high_quality_count += 1
+
+            if source_count > 0:
+                quality_ratio = high_quality_count / source_count
+                confidence += quality_ratio * 0.3
+
+        # Factor in synthesis quality if available
+        if synthesis_result and hasattr(synthesis_result, 'content'):
+            content = synthesis_result.content.lower()
+            # Look for positive indicators
+            positive_indicators = ['confirmed', 'verified', 'consistent', 'reliable', 'accurate']
+            negative_indicators = ['uncertain', 'unclear', 'conflicting', 'unverified', 'disputed']
+
+            positive_count = sum(1 for indicator in positive_indicators if indicator in content)
+            negative_count = sum(1 for indicator in negative_indicators if indicator in content)
+
+            confidence += (positive_count * 0.05)
+            confidence -= (negative_count * 0.1)
+
+        return min(max(confidence, 0.1), 0.9)
+
     async def _store_search_results(self, query: str, final_result: Dict[str, Any], sources: List[Dict[str, Any]]):
-        """Store search results in vector database for future learning"""
+        """Store search results in vector database for future learning using vector embedding service"""
         try:
-            # Store the final answer as a document
+            # Store the final answer as a document using vector embedding service
             answer_content = final_result.get("answer", "")
             if answer_content and len(answer_content.strip()) > 50:
                 answer_metadata = {
@@ -460,41 +651,35 @@ class MultiAgentSearchTeam:
                     "created_at": datetime.now().isoformat()
                 }
 
-                await document_processor.process_and_index_content(answer_content, answer_metadata)
-                print(f"Stored search result for query: {query[:50]}...")
+                # Use vector embedding service to store the answer
+                await vector_embedding_service.store_document(answer_content, answer_metadata)
+                print(f"Stored search result with vector embeddings for query: {query[:50]}...")
 
-            # Store individual sources if they're not already in the database
+            # Store individual sources using vector embedding service
             if sources:
-                source_documents = []
+                # Prepare search results for vector storage
+                search_results_for_storage = []
                 for source in sources:
                     content = source.get("content", "")
                     if not content or len(content.strip()) < 50:
                         continue
 
-                    source_metadata = {
-                        "type": "web_source",
+                    search_result = {
+                        "content": content,
                         "title": source.get("title", ""),
                         "url": source.get("url", ""),
-                        "source_type": source.get("source_type", "web_search"),
+                        "source": source.get("source_type", "web_search"),
                         "relevance_score": source.get("relevance_score", 0.5),
-                        "similarity_score": source.get("similarity_score", 0.5),
-                        "related_query": query,
-                        "language": self.detected_language,
-                        "indexed_from_search": True,
-                        "created_at": datetime.now().isoformat()
+                        "timestamp": datetime.now().isoformat()
                     }
+                    search_results_for_storage.append(search_result)
 
-                    source_documents.append({
-                        "content": content,
-                        "metadata": source_metadata
-                    })
-
-                # Process sources in batch
-                if source_documents:
-                    for doc in source_documents[:5]:  # Limit to top 5 sources to avoid overwhelming the DB
-                        await document_processor.process_and_index_content(doc["content"], doc["metadata"])
-
-                    print(f"Stored {len(source_documents)} source documents from search")
+                # Use vector embedding service to store search results
+                if search_results_for_storage:
+                    # Limit to top 5 sources to avoid overwhelming the DB
+                    limited_results = search_results_for_storage[:5]
+                    await vector_embedding_service.store_search_results(limited_results, query)
+                    print(f"Stored {len(limited_results)} source documents with vector embeddings from search")
 
         except Exception as e:
             print(f"Error storing search results: {e}")

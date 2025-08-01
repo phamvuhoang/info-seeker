@@ -4,10 +4,13 @@ from agno.tools.duckduckgo import DuckDuckGoTools
 from typing import Dict, Any, List
 import asyncio
 import re
+import logging
 from datetime import datetime
 from ..core.config import settings
 from ..services.sse_manager import progress_manager
 from .base_streaming_agent import BaseStreamingAgent
+
+logger = logging.getLogger(__name__)
 
 
 class ValidationAgent(BaseStreamingAgent):
@@ -149,15 +152,17 @@ Be specific about any concerns and provide reasoning for your confidence score.
             validation_analysis = self._analyze_validation(response.content, sources)
 
             # Factor in fact-checking results
-            if fact_check_results["overall_verification_score"] != 0.7:  # If fact-checking was performed
+            if fact_check_results["claims_checked"] > 0:  # If fact-checking was actually performed
                 # Weight the original confidence with fact-checking results
                 original_confidence = validation_analysis["confidence_score"]
                 fact_check_confidence = fact_check_results["overall_verification_score"]
                 validation_analysis["confidence_score"] = (original_confidence * 0.6) + (fact_check_confidence * 0.4)
                 validation_analysis["fact_check_performed"] = True
                 validation_analysis["fact_check_results"] = fact_check_results
+                print(f"Fact-checking performed: original={original_confidence:.3f}, fact_check={fact_check_confidence:.3f}, final={validation_analysis['confidence_score']:.3f}")
             else:
                 validation_analysis["fact_check_performed"] = False
+                print(f"No fact-checking performed, using base confidence: {validation_analysis['confidence_score']:.3f}")
             
             # Broadcast progress
             if self.session_id:
@@ -306,6 +311,8 @@ Be specific about any concerns and provide reasoning for your confidence score.
 
         # Ensure confidence is within bounds
         analysis["confidence_score"] = min(max(confidence_score, 0.1), 0.95)
+
+        print(f"Validation analysis complete: confidence={analysis['confidence_score']:.3f}, positive_indicators={positive_count}, negative_indicators={negative_count}, sources={len(sources) if sources else 0}")
         
         # Check for issues
         issue_keywords = ["contradiction", "inconsistent", "unreliable", "bias", "missing", "incomplete"]
@@ -383,7 +390,7 @@ Be specific about any concerns and provide reasoning for your confidence score.
         fact_check_results = {
             "claims_checked": len(claims),
             "verification_results": [],
-            "overall_verification_score": 0.7
+            "overall_verification_score": 0.5  # Start with neutral score, not default
         }
 
         if not claims:

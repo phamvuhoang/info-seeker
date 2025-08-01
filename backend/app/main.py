@@ -1,9 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from .api import health, search
+from .api import health, search, database
 from .core.config import settings
 from .core.connection_manager import cleanup_connections
+from .core.migrations import migration_manager
 from .services.sse_manager import progress_manager
 import logging
 import json
@@ -27,6 +28,19 @@ app = FastAPI(
 async def startup_event():
     """Initialize resources on startup"""
     logger.info("InfoSeeker backend starting up...")
+
+    # Run database migrations
+    logger.info("Running database migrations...")
+    try:
+        migration_success = await migration_manager.run_migrations()
+        if migration_success:
+            logger.info("Database migrations completed successfully")
+        else:
+            logger.error("Database migrations failed - some features may not work correctly")
+    except Exception as e:
+        logger.error(f"Failed to run database migrations: {e}")
+        # Don't fail startup, but log the error
+        logger.warning("Application starting without migrations - some features may not work correctly")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -101,6 +115,7 @@ async def sse_endpoint(session_id: str):
 # Include routers
 app.include_router(health.router, tags=["health"])
 app.include_router(search.router, prefix="/api/v1", tags=["search"])
+app.include_router(database.router, prefix="/api/v1/database", tags=["database"])
 
 if __name__ == "__main__":
     import uvicorn

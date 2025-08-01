@@ -2,10 +2,13 @@ from agno.models.openai import OpenAIChat
 from agno.storage.redis import RedisStorage
 from typing import Dict, Any, List
 import asyncio
+import logging
 from datetime import datetime
 from ..core.config import settings
 from ..services.sse_manager import progress_manager
 from .base_streaming_agent import BaseStreamingAgent
+
+logger = logging.getLogger(__name__)
 
 
 class SynthesisAgent(BaseStreamingAgent):

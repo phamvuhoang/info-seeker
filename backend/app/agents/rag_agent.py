@@ -359,6 +359,26 @@ class RAGAgent(BaseStreamingAgent):
                               if k not in ['stream', 'stream_intermediate_steps', 'show_full_reasoning']}
                 final_response = await super().arun(message, **clean_kwargs)
 
+                # Log detailed information about the response and tool calls
+                if final_response:
+                    logger.info(f"RAG Agent response content length: {len(final_response.content) if final_response.content else 0}")
+                    if hasattr(final_response, 'tools') and final_response.tools:
+                        logger.info(f"RAG Agent made {len(final_response.tools)} tool calls")
+                        for i, tool in enumerate(final_response.tools):
+                            logger.info(f"Tool {i+1}: {tool.tool_name} - Success: {not tool.tool_call_error}")
+                            if tool.tool_name == "search_knowledge_base" and tool.result:
+                                try:
+                                    import json
+                                    docs = json.loads(tool.result)
+                                    logger.info(f"Knowledge base search returned {len(docs)} documents")
+                                    for j, doc in enumerate(docs[:3]):  # Log first 3 docs
+                                        doc_title = doc.get('name', doc.get('meta_data', {}).get('title', 'Untitled'))
+                                        logger.info(f"  Doc {j+1}: {doc_title[:50]}...")
+                                except Exception as e:
+                                    logger.error(f"Failed to parse tool result: {e}")
+                    else:
+                        logger.warning("RAG Agent response has no tool calls - knowledge base search may not have been triggered")
+
                 # Log successful completion
                 processing_time = (datetime.now() - start_time).total_seconds()
                 logger.info(f"RAG Agent completed successfully in {processing_time:.2f}s using agno knowledge base")

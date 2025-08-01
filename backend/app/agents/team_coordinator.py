@@ -241,6 +241,14 @@ class MultiAgentSearchTeam:
                     combined_context = f"Query: {query}\n\nNo search sources enabled."
 
                 # Extract sources first (needed for validation)
+                logger.info(f"DEBUG: Extracting sources from results - RAG: {rag_result is not None}, Web: {web_result is not None}")
+                if rag_result:
+                    logger.info(f"DEBUG: RAG result has tools: {hasattr(rag_result, 'tools') and rag_result.tools is not None}")
+                    if hasattr(rag_result, 'tools') and rag_result.tools:
+                        logger.info(f"DEBUG: RAG result has {len(rag_result.tools)} tools")
+                        for tool in rag_result.tools:
+                            logger.info(f"DEBUG: Tool: {tool.tool_name}, Error: {tool.tool_call_error}, Has result: {tool.result is not None}")
+
                 all_sources = self._extract_sources_from_results([
                     rag_result if include_rag else None,
                     web_result if include_web else None
@@ -484,11 +492,54 @@ class MultiAgentSearchTeam:
         return "\n".join(context_parts)
 
     def _extract_sources_from_results(self, results: List) -> List[Dict[str, Any]]:
-        """Extract sources from agent results"""
+        """Extract sources from agent results including RAG knowledge base results"""
         all_sources = []
 
         for result in results:
             if result and hasattr(result, 'content'):
+                # First check if this result has tool executions (for RAG results)
+                if hasattr(result, 'tools') and result.tools:
+                    logger.info(f"Found {len(result.tools)} tool executions in result")
+                    for tool_execution in result.tools:
+                        if (tool_execution.tool_name == "search_knowledge_base" and
+                            tool_execution.result and
+                            not tool_execution.tool_call_error):
+                            try:
+                                # Parse the JSON result from knowledge base search
+                                import json
+                                knowledge_docs = json.loads(tool_execution.result)
+                                logger.info(f"Parsed {len(knowledge_docs)} documents from knowledge base search")
+
+                                for doc in knowledge_docs:
+                                    # Extract document information
+                                    doc_title = doc.get('name', doc.get('meta_data', {}).get('title', 'Source from DB'))
+                                    doc_url = doc.get('meta_data', {}).get('url', '')
+                                    doc_content = doc.get('content', '')[:300]
+                                    if len(doc.get('content', '')) > 300:
+                                        doc_content += "..."
+
+                                    # Use reranking_score if available, otherwise use a default high score for DB sources
+                                    relevance_score = doc.get('reranking_score', 0.9)
+
+                                    all_sources.append({
+                                        "title": doc_title,
+                                        "url": doc_url,
+                                        "content": doc_content,
+                                        "relevance_score": relevance_score,
+                                        "source_type": "knowledge_base"
+                                    })
+
+                            except (json.JSONDecodeError, Exception) as e:
+                                logger.error(f"Failed to parse knowledge base search result: {e}")
+                                # Add a generic DB source entry
+                                all_sources.append({
+                                    "title": "Source from DB",
+                                    "url": "",
+                                    "content": "Knowledge base search completed",
+                                    "relevance_score": 0.9,
+                                    "source_type": "knowledge_base"
+                                })
+
                 # Check if this is a web search result with structured data
                 if hasattr(result, 'search_results') and result.search_results:
                     # Use structured search results if available
@@ -501,7 +552,7 @@ class MultiAgentSearchTeam:
                             "source_type": search_result.get("source_type", "web_search")
                         })
                 else:
-                    # Fallback to simple URL extraction from content
+                    # Fallback to simple URL extraction from content for web search results
                     import re
                     # Fixed regex pattern that doesn't include trailing punctuation
                     urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|(?:%[0-9a-fA-F][0-9a-fA-F]))+(?=[^\w]|$)',
@@ -521,6 +572,7 @@ class MultiAgentSearchTeam:
                             "source_type": "extracted"
                         })
 
+        logger.info(f"Extracted {len(all_sources)} total sources: {sum(1 for s in all_sources if s['source_type'] == 'knowledge_base')} from DB, {sum(1 for s in all_sources if s['source_type'] in ['web_search', 'extracted'])} from web")
         return all_sources
 
     async def _initialize_search_session(self, query: str):

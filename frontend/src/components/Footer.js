@@ -9,7 +9,7 @@ const Footer = () => {
           <div className="flex items-center text-sm text-gray-500">
             <span>Made with</span>
             <Heart className="h-4 w-4 mx-1 text-red-500" />
-            <span>by the InfoSeeker team</span>
+            <span>by the Henry</span>
           </div>
           
           <div className="flex items-center space-x-4">

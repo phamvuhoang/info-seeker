@@ -76,10 +76,13 @@ class RAGAgent(BaseStreamingAgent):
                 "You are the RAG specialist for InfoSeeker.",
                 "Search the knowledge base using the search_knowledge_base tool for relevant stored information.",
                 "Focus on finding the MOST relevant documents rather than all possible matches.",
+                "Only use documents that are highly relevant to the user's query - similarity threshold filtering is applied.",
+                "If the search returns documents but they are not relevant enough (below similarity threshold), treat it as no results found.",
                 "Provide concise, focused answers based on the best matching documents.",
                 "If you find highly relevant information, prioritize quality over quantity.",
                 "Include specific citations and source metadata when available.",
-                "If no highly relevant information is found, clearly state this - don't force connections.",
+                "If no highly relevant information is found, clearly state: 'No relevant information found in the knowledge base for this query.'",
+                "Do not force connections or provide answers based on weakly related documents.",
                 "Remember that web search will complement your findings with fresh information.",
                 "IMPORTANT: Always respond in the same language as the user's query.",
                 "If you receive a language instruction at the beginning of the message, follow it strictly.",
@@ -93,6 +96,200 @@ class RAGAgent(BaseStreamingAgent):
 
         self.session_id = session_id
         self.vector_embedding_service = vector_embedding_service  # Keep for backward compatibility
+
+    async def _filter_documents_by_similarity(self, query: str, documents: List[Dict]) -> List[Dict]:
+        """Filter documents based on similarity threshold"""
+        if not documents or settings.rag_similarity_threshold is None:
+            return documents
+
+        try:
+            # Get query embedding
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=settings.openai_api_key)
+
+            query_response = await client.embeddings.create(
+                input=query,
+                model=settings.embedding_model
+            )
+            query_embedding = query_response.data[0].embedding
+
+            filtered_docs = []
+            for doc in documents:
+                # Get document embedding if available
+                doc_embedding = doc.get('embedding')
+                if not doc_embedding:
+                    # If no embedding available, include the document (backward compatibility)
+                    filtered_docs.append(doc)
+                    continue
+
+                # Calculate cosine similarity
+                similarity_score = self._calculate_cosine_similarity(query_embedding, doc_embedding)
+
+                # Add similarity score to metadata
+                if 'meta_data' not in doc:
+                    doc['meta_data'] = {}
+                doc['meta_data']['similarity_score'] = round(similarity_score, 3)
+
+                # Filter by threshold
+                if similarity_score >= settings.rag_similarity_threshold:
+                    filtered_docs.append(doc)
+                else:
+                    logger.debug(f"Filtered out document with similarity {similarity_score:.3f} below threshold {settings.rag_similarity_threshold}")
+
+            return filtered_docs
+
+        except Exception as e:
+            logger.error(f"Error filtering documents by similarity: {e}")
+            # Return original documents if filtering fails
+            return documents
+
+    def _calculate_cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """Calculate cosine similarity between two vectors"""
+        import numpy as np
+
+        try:
+            v1 = np.array(vec1)
+            v2 = np.array(vec2)
+
+            # Calculate cosine similarity
+            dot_product = np.dot(v1, v2)
+            norm_v1 = np.linalg.norm(v1)
+            norm_v2 = np.linalg.norm(v2)
+
+            if norm_v1 == 0 or norm_v2 == 0:
+                return 0.0
+
+            similarity = dot_product / (norm_v1 * norm_v2)
+            return float(similarity)
+
+        except Exception as e:
+            logger.error(f"Error calculating cosine similarity: {e}")
+            return 0.0
+
+    async def _filter_by_relevance(self, query: str, documents: List[Dict]) -> List[Dict]:
+        """Filter documents by relevance using keyword-based entity matching"""
+        if not documents:
+            return documents
+
+        try:
+            # Extract key entities/topics from the query
+            query_entities = self._extract_entities(query.lower())
+            logger.info(f"Query entities: {query_entities}")
+
+            filtered_docs = []
+
+            for doc in documents:
+                content = doc.get('content', '')
+                doc_title = doc.get('name', doc.get('meta_data', {}).get('title', 'Untitled'))
+
+                # Skip empty documents
+                if not content.strip():
+                    logger.debug(f"Skipping empty document: {doc_title}")
+                    continue
+
+                # Extract entities from document content
+                doc_text = f"{doc_title} {content}".lower()
+                doc_entities = self._extract_entities(doc_text)
+
+                # Check for entity overlap
+                common_entities = query_entities.intersection(doc_entities)
+                relevance_score = len(common_entities) / max(len(query_entities), 1)
+
+                # Strict threshold: require significant entity overlap
+                if relevance_score >= 0.5 and common_entities:  # At least 50% entity overlap
+                    # Add relevance score to metadata
+                    if 'meta_data' not in doc:
+                        doc['meta_data'] = {}
+                    doc['meta_data']['relevance_score'] = f'{relevance_score:.2f}'
+                    doc['meta_data']['common_entities'] = list(common_entities)
+                    filtered_docs.append(doc)
+                    logger.info(f"RELEVANT: {doc_title[:50]}... (score: {relevance_score:.2f}, entities: {list(common_entities)})")
+                else:
+                    logger.info(f"NOT_RELEVANT: {doc_title[:50]}... (score: {relevance_score:.2f}, entities: {list(common_entities)})")
+
+            logger.info(f"Relevance filtering: {len(documents)} -> {len(filtered_docs)} documents")
+            return filtered_docs
+
+        except Exception as e:
+            logger.error(f"Error in relevance filtering: {e}")
+            # Return original documents if filtering fails
+            return documents
+
+    def _extract_entities(self, text: str) -> set:
+        """Extract key entities (places, topics) from text"""
+        import re
+
+        # Common location names and topics
+        entities = set()
+
+        # Extract potential place names (capitalized words)
+        words = re.findall(r'\b[a-z]+\b', text)
+
+        # Add all words as potential entities
+        entities.update(words)
+
+        # Remove common stop words
+        stop_words = {
+            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+            'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
+            'will', 'would', 'could', 'should', 'may', 'might', 'can', 'this', 'that', 'these', 'those',
+            'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your',
+            'his', 'her', 'its', 'our', 'their', 'best', 'top', 'good', 'great', 'most', 'some', 'many',
+            'tourist', 'attractions', 'spots', 'places', 'city', 'area', 'location', 'destination'
+        }
+
+        entities = entities - stop_words
+
+        # Keep only meaningful entities (length > 2)
+        entities = {e for e in entities if len(e) > 2}
+
+        return entities
+
+    async def _custom_similarity_search(self, query: str) -> List[Dict]:
+        """Perform custom similarity search with threshold filtering"""
+        try:
+            # Use the vector embedding service to search with similarity scores
+            results = await self.vector_embedding_service.similarity_search(
+                query,
+                limit=settings.max_rag_results * 2  # Get more results to filter
+            )
+
+            if not results:
+                logger.info("No results from vector similarity search")
+                return []
+
+            # Log all similarity scores for analysis
+            all_scores = [result.get('similarity_score', 0.0) for result in results]
+            logger.info(f"All similarity scores: {[round(score, 3) for score in all_scores]}")
+
+            # Filter by similarity threshold
+            filtered_results = []
+            for result in results:
+                similarity_score = result.get('similarity_score', 0.0)
+                if similarity_score >= settings.rag_similarity_threshold:
+                    # Convert to agno document format
+                    doc = {
+                        'name': result.get('title', 'Untitled'),
+                        'content': result.get('content', ''),
+                        'meta_data': {
+                            **result.get('metadata', {}),
+                            'similarity_score': round(similarity_score, 3)
+                        }
+                    }
+                    filtered_results.append(doc)
+                    logger.info(f"PASSED: Document with similarity {similarity_score:.3f} (>= {settings.rag_similarity_threshold})")
+                else:
+                    logger.info(f"FILTERED: Document with similarity {similarity_score:.3f} (< {settings.rag_similarity_threshold})")
+
+            # Limit to max results
+            filtered_results = filtered_results[:settings.max_rag_results]
+
+            logger.info(f"Custom similarity search: {len(results)} -> {len(filtered_results)} documents after filtering")
+            return filtered_results
+
+        except Exception as e:
+            logger.error(f"Error in custom similarity search: {e}")
+            return []
     
     async def search_knowledge_base(self, query: str, max_results: int = None) -> Dict[str, Any]:
         """Search the vector database for relevant information with enhanced logging"""
@@ -358,7 +555,7 @@ class RAGAgent(BaseStreamingAgent):
                               if k not in ['stream', 'stream_intermediate_steps', 'show_full_reasoning']}
                 final_response = await super().arun(message, **clean_kwargs)
 
-                # Log detailed information about the response and tool calls
+                # Apply relevance filtering to all search results
                 if final_response:
                     logger.info(f"RAG Agent response content length: {len(final_response.content) if final_response.content else 0}")
                     if hasattr(final_response, 'tools') and final_response.tools:
@@ -370,11 +567,25 @@ class RAGAgent(BaseStreamingAgent):
                                     import json
                                     docs = json.loads(tool.result)
                                     logger.info(f"Knowledge base search returned {len(docs)} documents")
-                                    for j, doc in enumerate(docs[:3]):  # Log first 3 docs
-                                        doc_title = doc.get('name', doc.get('meta_data', {}).get('title', 'Untitled'))
-                                        logger.info(f"  Doc {j+1}: {doc_title[:50]}...")
+
+                                    # Apply relevance filtering to all results
+                                    filtered_docs = await self._filter_by_relevance(message, docs)
+
+                                    if len(filtered_docs) == 0:
+                                        logger.info("No documents are relevant to the query - updating response")
+                                        final_response.content = "No relevant information found in the knowledge base for this query."
+                                        tool.result = json.dumps([])
+                                    else:
+                                        logger.info(f"Relevance filtering: {len(docs)} -> {len(filtered_docs)} documents")
+                                        tool.result = json.dumps(filtered_docs)
+
+                                        for j, doc in enumerate(filtered_docs[:3]):  # Log first 3 docs
+                                            doc_title = doc.get('name', doc.get('meta_data', {}).get('title', 'Untitled'))
+                                            relevance = doc.get('meta_data', {}).get('relevance_score', 'N/A')
+                                            logger.info(f"  Doc {j+1}: {doc_title[:50]}... (relevance: {relevance})")
+
                                 except Exception as e:
-                                    logger.error(f"Failed to parse tool result: {e}")
+                                    logger.error(f"Failed to parse or filter tool result: {e}")
                     else:
                         logger.warning("RAG Agent response has no tool calls - knowledge base search may not have been triggered")
 

@@ -1,29 +1,48 @@
 # InfoSeeker - AI-Powered Search Platform
 
-InfoSeeker is an open-source AI-powered search platform designed to deliver junk-free, personalized information retrieval and answer generation. It leverages trusted online sources and stored data to provide concise, accurate, and contextually relevant answers.
+InfoSeeker is an open-source AI-powered search platform designed to deliver junk-free, personalized information retrieval and answer generation. It leverages a multi-agent system to consult trusted online sources and stored data, providing concise, accurate, and contextually relevant answers with real-time progress updates.
 
 ## 🚀 Features
 
-- **Web Search Automation**: Real-time web searches using browser automation (Playwright)
-- **AI Answer Generation**: Context-aware answers using advanced AI with Retrieval-Augmented Generation (RAG)
-- **Stored Data Search**: Semantic search through stored content using vector embeddings
-- **Session Management**: Persistent context across user interactions
-- **Clean Architecture**: Built with FastAPI, React, and modern technologies
+- **Multi-Agent Hybrid Search**: A team of specialized AI agents collaborates to combine vector-based RAG with real-time web search.
+- **Real-time Progress Updates**: WebSocket-based communication provides live updates on agent status and progress.
+- **Web Search Automation**: Real-time web searches using browser automation (Playwright).
+- **Stored Data Search**: Semantic search through stored content using PgVector and vector embeddings.
+- **AI Answer Generation**: Context-aware answers using advanced AI with Retrieval-Augmented Generation (RAG).
+- **Intelligent Storage**: Automatically vectorizes and stores search results for future learning.
+- **Multi-Language Support**: Automatic detection and response in 60+ languages.
+- **Session Management**: Persistent context across user interactions.
+- **Clean Architecture**: Built with FastAPI, React, and modern technologies.
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Web UI/API    │    │   Agent Core    │    │  Knowledge Base │
-│   (FastAPI)     │◄──►│   (Agno)        │◄──►│   (PgVector)    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         ▼                       ▼                       ▼
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Session       │    │   Web Search    │    │   Content       │
-│   Management    │    │   (Playwright)  │    │   Processing    │
-│   (Redis)       │    └─────────────────┘    │   Pipeline      │
-└─────────────────┘                           └─────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           Frontend (React + WebSocket)                      │
+│                        Real-time Agent Progress Updates                     │
+└─────────────────────────┬───────────────────────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────────────────────┐
+│                      FastAPI Backend + WebSocket                            │
+│                    Orchestrator Agent (Team Leader)                         │
+└─────────────────────────┬───────────────────────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────────────────────┐
+│                    Multi-Agent Search Team                                  │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────┐│
+│  │ RAG Agent   │ │ Web Agent   │ │ Synthesis   │ │ Validation  │ │ Answer  ││
+│  │ (Vector     │ │ (Playwright │ │ Agent       │ │ Agent       │ │ Agent   ││
+│  │ Search)     │ │ Search)     │ │ (Combine)   │ │ (Verify)    │ │ (Final) ││
+│  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘ └─────────┘│
+└─────────────────────────┬───────────────────────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────────────────────┐
+│                    Knowledge & Storage Layer                                │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐           │
+│  │ PgVector    │ │ Redis       │ │ Session     │ │ Agent       │           │
+│  │ (Embeddings)│ │ (Cache)     │ │ Memory      │ │ Workflows   │           │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘           │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Backend**: FastAPI with Agno framework for AI agents
@@ -35,7 +54,7 @@ InfoSeeker is an open-source AI-powered search platform designed to deliver junk
 
 ## 📋 Prerequisites
 
-- Python 3.13+
+- Python 3.11+
 - Node.js 18+
 - Docker and Docker Compose
 - OpenAI API key
@@ -100,13 +119,7 @@ InfoSeeker is an open-source AI-powered search platform designed to deliver junk
 6. **Start PostgreSQL and Redis**
    ```bash
    # Using Docker
-   docker run -d --name infoseeker-postgres -p 5432:5432 \
-     -e POSTGRES_DB=infoseeker \
-     -e POSTGRES_USER=infoseeker \
-     -e POSTGRES_PASSWORD=infoseeker \
-     pgvector/pgvector:pg16
-
-   docker run -d --name infoseeker-redis -p 6379:6379 redis:7-alpine
+   docker-compose up -d postgres redis
    ```
 
 7. **Run the backend**
@@ -142,7 +155,7 @@ InfoSeeker is an open-source AI-powered search platform designed to deliver junk
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `OPENAI_API_KEY` | OpenAI API key (required) | - |
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql+psycopg://infoseeker:infoseeker@localhost:5432/infoseeker` |
+| `DATABASE_URL` | PostgreSQL connection string | `postgresql+psycopg://infoseeker:infoseeker@localhost:5433/infoseeker` |
 | `REDIS_URL` | Redis connection string | `redis://localhost:6379/0` |
 | `DEBUG` | Enable debug mode | `false` |
 | `HOST` | Server host | `0.0.0.0` |
@@ -152,36 +165,27 @@ InfoSeeker is an open-source AI-powered search platform designed to deliver junk
 
 ## 📖 API Documentation
 
-### Search Endpoint
+### Hybrid Search Endpoint
 
-**POST** `/api/v1/search`
+**POST** `/api/v1/search/hybrid`
 
 ```json
 {
-  "query": "What are the latest AI developments?",
-  "max_results": 10,
+  "query": "What are the latest developments in AI?",
+  "session_id": "unique-session-id",
   "include_web": true,
-  "include_stored": true
+  "include_rag": true,
+  "max_results": 10
 }
 ```
 
 **Response:**
+The final response is delivered via WebSocket, but the initial HTTP response will be:
 ```json
 {
-  "query": "What are the latest AI developments?",
-  "answer": "Based on recent information...",
-  "sources": [
-    {
-      "title": "Source Title",
-      "content": "Source content...",
-      "url": "https://example.com",
-      "source": "DuckDuckGo",
-      "relevance_score": 0.95,
-      "timestamp": "2024-01-01T00:00:00Z"
-    }
-  ],
-  "processing_time": 2.34,
-  "session_id": "uuid-string"
+  "status": "started",
+  "session_id": "unique-session-id",
+  "message": "Multi-agent search initiated. Connect to WebSocket for real-time updates."
 }
 ```
 
@@ -203,6 +207,15 @@ python -m pytest tests/
 ```bash
 cd frontend
 npm test
+```
+
+### Validation Scripts
+```bash
+# Test multi-agent system functionality
+python info-seeker/backend/test_multi_agent_system.py
+
+# Validate deployment
+python info-seeker/validate_deployment.py
 ```
 
 ## 🚀 Deployment
@@ -249,6 +262,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - [x] **Milestone 1**: Foundational Setup and Core Backend
 - [x] **Milestone 2**: Web Search and Content Processing
-- [ ] **Milestone 3**: Vector Search and RAG Implementation
+- [x] **Milestone 3**: Multi-Agent Hybrid Search Implementation
 - [ ] **Milestone 4**: Advanced Features and UI Polish
 - [ ] **Milestone 5**: Production Optimization and Scaling

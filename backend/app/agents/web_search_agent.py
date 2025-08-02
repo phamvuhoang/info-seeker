@@ -62,6 +62,8 @@ class WebSearchAgent(BaseStreamingAgent):
                 "Provide concise summaries with source URLs from successful searches.",
                 "Focus on factual, up-to-date information.",
                 "Be efficient and conservative with search requests.",
+                f"IMPORTANT: When searching for current trends, news, or recent information, use {datetime.now().year} as the current year.",
+                "Search for the most recent and current information available.",
                 "IMPORTANT: Always respond in the same language as the user's query.",
                 "If you receive a language instruction at the beginning of the message, follow it strictly.",
                 "Maintain the same language throughout your entire response."

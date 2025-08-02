@@ -64,6 +64,8 @@ class ValidationAgent(BaseStreamingAgent):
                 "Provide detailed confidence scores with reasoning.",
                 "Suggest improvements or corrections if needed.",
                 "When in doubt, search for additional sources to verify claims.",
+                f"IMPORTANT: When fact-checking current information, use {datetime.now().year} as the current year.",
+                "Search for the most recent and up-to-date verification sources.",
                 "IMPORTANT: Always respond in the same language as the user's query.",
                 "If you receive a language instruction at the beginning of the message, follow it strictly.",
                 "Maintain the same language throughout your entire response."

@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import os
+from typing import Optional
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -46,6 +47,9 @@ class Settings(BaseSettings):
     max_web_results: int = 3  # Reduced to avoid rate limiting
     hybrid_search_weight_rag: float = 0.6
     hybrid_search_weight_web: float = 0.4
+
+    # RAG relevance filtering (disabled - using agno's built-in search)
+    rag_similarity_threshold: Optional[float] = None  # Disabled to use agno's built-in search reliability
 
     # Source balancing settings
     max_total_sources: int = 8  # Maximum sources to display

@@ -39,8 +39,12 @@ class WebSearchAgent(BaseStreamingAgent):
                 print(f"Warning: Failed to configure Redis storage: {e}")
                 storage = None
 
-        # Initialize DuckDuckGo tools with optimized settings
-        ddg_tools = DuckDuckGoTools(search=True, news=True, fixed_max_results=5)  # Reduced for performance
+        # Initialize DuckDuckGo tools with optimized settings and rate limiting protection
+        ddg_tools = DuckDuckGoTools(
+            search=True,
+            news=False,  # Disable news to reduce rate limiting
+            fixed_max_results=3  # Further reduced to avoid rate limits
+        )
 
         super().__init__(
             name="Web Search Specialist",
@@ -51,12 +55,15 @@ class WebSearchAgent(BaseStreamingAgent):
             description="Web search specialist for current information",
             instructions=[
                 "You are the web search specialist for InfoSeeker.",
-                "Use DuckDuckGo search to find the most relevant information quickly.",
-                "Extract key search terms from user requests.",
-                "Search for current information using relevant keywords.",
-                "Provide concise summaries with source URLs.",
+                "Use DuckDuckGo search efficiently to find the most relevant information.",
+                "Make focused searches with specific keywords to avoid rate limits.",
+                "Prioritize quality over quantity - fewer, better searches are preferred.",
+                "If a search fails due to rate limiting, acknowledge it and work with available results.",
+                "Provide concise summaries with source URLs from successful searches.",
                 "Focus on factual, up-to-date information.",
-                "Be efficient and provide results quickly.",
+                "Be efficient and conservative with search requests.",
+                f"IMPORTANT: When searching for current trends, news, or recent information, use {datetime.now().year} as the current year.",
+                "Search for the most recent and current information available.",
                 "IMPORTANT: Always respond in the same language as the user's query.",
                 "If you receive a language instruction at the beginning of the message, follow it strictly.",
                 "Maintain the same language throughout your entire response."

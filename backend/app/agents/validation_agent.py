@@ -36,8 +36,13 @@ class ValidationAgent(BaseStreamingAgent):
                 print(f"Warning: Failed to configure Redis storage: {e}")
                 storage = None
 
-        # Add DuckDuckGo tools for fact-checking
-        ddg_tools = DuckDuckGoTools(search=True, news=True, fixed_max_results=3)
+        # Add DuckDuckGo tools for fact-checking with rate limiting protection
+        ddg_tools = DuckDuckGoTools(
+            search=True,
+            news=False,  # Disable news to reduce rate limiting
+            fixed_max_results=2,  # Reduce to minimize requests
+            timeout=15  # Increase timeout to handle rate limits better
+        )
 
         super().__init__(
             name="Information Validator",
@@ -59,6 +64,8 @@ class ValidationAgent(BaseStreamingAgent):
                 "Provide detailed confidence scores with reasoning.",
                 "Suggest improvements or corrections if needed.",
                 "When in doubt, search for additional sources to verify claims.",
+                f"IMPORTANT: When fact-checking current information, use {datetime.now().year} as the current year.",
+                "Search for the most recent and up-to-date verification sources.",
                 "IMPORTANT: Always respond in the same language as the user's query.",
                 "If you receive a language instruction at the beginning of the message, follow it strictly.",
                 "Maintain the same language throughout your entire response."
@@ -400,8 +407,19 @@ Be specific about any concerns and provide reasoning for your confidence score.
             # Create a fact-checking query
             fact_check_query = f"Verify facts about: {query} - checking claims about {', '.join(claims[:2])}"
 
-            # Use the agent's built-in search capability
-            verification_response = await super().arun(f"Please search for and verify these claims: {fact_check_query}")
+            # Use the agent's built-in search capability with rate limit handling
+            try:
+                verification_response = await super().arun(f"Please search for and verify these claims: {fact_check_query}")
+            except Exception as search_error:
+                if "rate limit" in str(search_error).lower():
+                    print(f"Rate limit encountered during fact-checking, skipping additional verification")
+                    fact_check_results["verification_results"].append({
+                        "status": "rate_limited",
+                        "message": "Additional verification skipped due to rate limiting"
+                    })
+                    return fact_check_results
+                else:
+                    raise
 
             if verification_response and hasattr(verification_response, 'content'):
                 # Analyze the verification response

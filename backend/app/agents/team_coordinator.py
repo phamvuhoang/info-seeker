@@ -216,12 +216,18 @@ class MultiAgentSearchTeam:
                     # Wait for both to complete
                     rag_result, web_result = await asyncio.gather(rag_task, web_task, return_exceptions=True)
 
-                    # Handle exceptions
+                    # Handle exceptions with better error categorization
                     if isinstance(rag_result, Exception):
                         await self._broadcast_progress("RAG Specialist", "failed", f"RAG search failed: {str(rag_result)}")
                         rag_result = None
                     if isinstance(web_result, Exception):
-                        await self._broadcast_progress("Web Search Specialist", "failed", f"Web search failed: {str(web_result)}")
+                        error_msg = str(web_result)
+                        if "Ratelimit" in error_msg or "rate limit" in error_msg.lower():
+                            await self._broadcast_progress("Web Search Specialist", "rate_limited", "Web search temporarily rate limited - using available sources")
+                            logger.warning(f"Web search rate limited: {error_msg}")
+                        else:
+                            await self._broadcast_progress("Web Search Specialist", "failed", f"Web search failed: {error_msg}")
+                            logger.error(f"Web search failed: {error_msg}")
                         web_result = None
 
                     # Combine results for synthesis
@@ -241,6 +247,14 @@ class MultiAgentSearchTeam:
                     combined_context = f"Query: {query}\n\nNo search sources enabled."
 
                 # Extract sources first (needed for validation)
+                logger.info(f"DEBUG: Extracting sources from results - RAG: {rag_result is not None}, Web: {web_result is not None}")
+                if rag_result:
+                    logger.info(f"DEBUG: RAG result has tools: {hasattr(rag_result, 'tools') and rag_result.tools is not None}")
+                    if hasattr(rag_result, 'tools') and rag_result.tools:
+                        logger.info(f"DEBUG: RAG result has {len(rag_result.tools)} tools")
+                        for tool in rag_result.tools:
+                            logger.info(f"DEBUG: Tool: {tool.tool_name}, Error: {tool.tool_call_error}, Has result: {tool.result is not None}")
+
                 all_sources = self._extract_sources_from_results([
                     rag_result if include_rag else None,
                     web_result if include_web else None
@@ -484,11 +498,67 @@ class MultiAgentSearchTeam:
         return "\n".join(context_parts)
 
     def _extract_sources_from_results(self, results: List) -> List[Dict[str, Any]]:
-        """Extract sources from agent results"""
+        """Extract sources from agent results including RAG knowledge base results"""
         all_sources = []
 
         for result in results:
             if result and hasattr(result, 'content'):
+                # First check if this result has tool executions (for RAG results)
+                if hasattr(result, 'tools') and result.tools:
+                    logger.info(f"Found {len(result.tools)} tool executions in result")
+                    for tool_execution in result.tools:
+                        if (tool_execution.tool_name == "search_knowledge_base" and
+                            tool_execution.result and
+                            not tool_execution.tool_call_error):
+                            try:
+                                # Parse the JSON result from knowledge base search
+                                import json
+                                knowledge_docs = json.loads(tool_execution.result)
+                                logger.info(f"Parsed {len(knowledge_docs)} documents from knowledge base search")
+
+                                for doc in knowledge_docs:
+                                    # Extract document information with better fallbacks
+                                    meta_data = doc.get('meta_data', {})
+                                    doc_title = (
+                                        meta_data.get('title') or
+                                        doc.get('name') or
+                                        f"Knowledge Base Document"
+                                    )
+                                    doc_url = meta_data.get('url', '')
+                                    doc_source = meta_data.get('source', 'Knowledge Base')
+
+                                    # Get content with better formatting
+                                    full_content = doc.get('content', '')
+                                    if len(full_content) > 200:
+                                        doc_content = full_content[:200] + "..."
+                                    else:
+                                        doc_content = full_content
+
+                                    # Use reranking_score if available, otherwise use a more moderate score for DB sources
+                                    relevance_score = doc.get('reranking_score', 0.85)
+
+                                    all_sources.append({
+                                        "title": doc_title,
+                                        "url": doc_url,
+                                        "content": doc_content,
+                                        "relevance_score": relevance_score,
+                                        "source_type": "knowledge_base",
+                                        "source": doc_source,
+                                        "created_at": meta_data.get('created_at', ''),
+                                        "document_id": doc.get('id', '')
+                                    })
+
+                            except (json.JSONDecodeError, Exception) as e:
+                                logger.error(f"Failed to parse knowledge base search result: {e}")
+                                # Add a generic DB source entry
+                                all_sources.append({
+                                    "title": "Source from DB",
+                                    "url": "",
+                                    "content": "Knowledge base search completed",
+                                    "relevance_score": 0.9,
+                                    "source_type": "knowledge_base"
+                                })
+
                 # Check if this is a web search result with structured data
                 if hasattr(result, 'search_results') and result.search_results:
                     # Use structured search results if available
@@ -501,7 +571,7 @@ class MultiAgentSearchTeam:
                             "source_type": search_result.get("source_type", "web_search")
                         })
                 else:
-                    # Fallback to simple URL extraction from content
+                    # Fallback to simple URL extraction from content for web search results
                     import re
                     # Fixed regex pattern that doesn't include trailing punctuation
                     urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|(?:%[0-9a-fA-F][0-9a-fA-F]))+(?=[^\w]|$)',
@@ -516,12 +586,61 @@ class MultiAgentSearchTeam:
                         all_sources.append({
                             "title": f"Source from search",
                             "url": url,
-                            "content": "",
+                            "content": "Web search result - click URL for full content",
                             "relevance_score": 0.8,
                             "source_type": "extracted"
                         })
 
-        return all_sources
+        # Balance sources to prevent DB sources from dominating
+        db_sources = [s for s in all_sources if s['source_type'] == 'knowledge_base']
+        web_sources = [s for s in all_sources if s['source_type'] in ['web_search', 'extracted']]
+
+        logger.info(f"Before balancing: {len(db_sources)} DB sources, {len(web_sources)} web sources")
+
+        # Apply source balancing rules
+        balanced_sources = self._balance_sources(db_sources, web_sources)
+
+        logger.info(f"After balancing: {len([s for s in balanced_sources if s['source_type'] == 'knowledge_base'])} DB sources, {len([s for s in balanced_sources if s['source_type'] in ['web_search', 'extracted']])} web sources")
+        return balanced_sources
+
+    def _balance_sources(self, db_sources: List[Dict[str, Any]], web_sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Balance DB and web sources to ensure diversity"""
+
+        # Sort sources by relevance score (descending)
+        db_sources_sorted = sorted(db_sources, key=lambda x: x.get('relevance_score', 0), reverse=True)
+        web_sources_sorted = sorted(web_sources, key=lambda x: x.get('relevance_score', 0), reverse=True)
+
+        # Define balancing rules from settings
+        max_total_sources = settings.max_total_sources
+        max_db_sources = settings.max_db_sources
+        min_web_sources = settings.min_web_sources
+
+        balanced_sources = []
+
+        # Always prioritize some web sources for freshness
+        if web_sources_sorted:
+            web_to_include = min(len(web_sources_sorted), max(min_web_sources, max_total_sources - max_db_sources))
+            balanced_sources.extend(web_sources_sorted[:web_to_include])
+            logger.info(f"Added {web_to_include} web sources for freshness")
+
+        # Add DB sources up to the limit
+        if db_sources_sorted:
+            remaining_slots = max_total_sources - len(balanced_sources)
+            db_to_include = min(len(db_sources_sorted), min(max_db_sources, remaining_slots))
+            balanced_sources.extend(db_sources_sorted[:db_to_include])
+            logger.info(f"Added {db_to_include} DB sources for relevance")
+
+        # If we still have slots and more web sources, fill them
+        if len(balanced_sources) < max_total_sources and len(web_sources_sorted) > min_web_sources:
+            remaining_slots = max_total_sources - len(balanced_sources)
+            additional_web = web_sources_sorted[min_web_sources:min_web_sources + remaining_slots]
+            balanced_sources.extend(additional_web)
+            logger.info(f"Added {len(additional_web)} additional web sources")
+
+        # Sort final results by relevance score
+        balanced_sources.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+
+        return balanced_sources
 
     async def _initialize_search_session(self, query: str):
         """Initialize the search session"""

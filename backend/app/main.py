@@ -1,11 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from .api import health, search, database
+from .api import health, search, database, predefined_content
 from .core.config import settings
 from .core.connection_manager import cleanup_connections
 from .core.migrations import migration_manager
 from .services.sse_manager import progress_manager
+from .services.scheduler_service import scheduler_service
+from .scrapers.engine import scraping_engine
+from .scrapers.agoda_scraper import AgodaScraper
+from .scrapers.tabelog_scraper import TabelogScraper
 import logging
 import json
 import asyncio
@@ -42,10 +46,44 @@ async def startup_event():
         # Don't fail startup, but log the error
         logger.warning("Application starting without migrations - some features may not work correctly")
 
+    # Register scrapers with the scraping engine
+    logger.info("Registering scrapers...")
+    try:
+        scraping_engine.register_scraper('agoda', AgodaScraper)
+        scraping_engine.register_scraper('tabelog', TabelogScraper)
+        logger.info("Scrapers registered successfully")
+    except Exception as e:
+        logger.error(f"Failed to register scrapers: {e}")
+
+    # Initialize and start scheduler for scraping tasks
+    logger.info("Starting scheduler service...")
+    try:
+        await scheduler_service.start()
+        logger.info("Scheduler service started successfully")
+    except Exception as e:
+        logger.error(f"Failed to start scheduler service: {e}")
+        logger.warning("Application starting without scheduler - scraping tasks will not run automatically")
+
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup resources on shutdown"""
     logger.info("InfoSeeker backend shutting down...")
+
+    # Stop scheduler service
+    try:
+        await scheduler_service.stop()
+        logger.info("Scheduler service stopped")
+    except Exception as e:
+        logger.error(f"Error stopping scheduler service: {e}")
+
+    # Cleanup scraping engine
+    try:
+        await scraping_engine.cleanup()
+        logger.info("Scraping engine cleaned up")
+    except Exception as e:
+        logger.error(f"Error cleaning up scraping engine: {e}")
+
+    # Cleanup other connections
     await cleanup_connections()
     logger.info("Cleanup completed")
 
@@ -116,6 +154,7 @@ async def sse_endpoint(session_id: str):
 app.include_router(health.router, tags=["health"])
 app.include_router(search.router, prefix="/api/v1", tags=["search"])
 app.include_router(database.router, prefix="/api/v1/database", tags=["database"])
+app.include_router(predefined_content.router, prefix="/api/v1/predefined_content", tags=["predefined_content"])
 
 if __name__ == "__main__":
     import uvicorn

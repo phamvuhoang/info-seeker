@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import SearchPage from './components/SearchPage';
 import RealTimeSearch from './components/RealTimeSearch';
 import DatabaseViewer from './components/DatabaseViewer';
+import BrowsePage from './components/BrowsePage';
 import Header from './components/Header';
 import Footer from './components/Footer';
 
@@ -17,6 +18,7 @@ function App() {
             <Route path="/search" element={<SearchPage />} />
             <Route path="/hybrid" element={<RealTimeSearch />} />
             <Route path="/database" element={<DatabaseViewer />} />
+            <Route path="/browse" element={<BrowsePage />} />
           </Routes>
         </main>
         <Footer />

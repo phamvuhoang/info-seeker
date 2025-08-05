@@ -4,12 +4,22 @@ InfoSeeker is an open-source AI-powered search platform designed to deliver junk
 
 ## 🚀 Features
 
+### Core Search Capabilities
 - **Multi-Agent Hybrid Search**: A team of specialized AI agents collaborates to combine vector-based RAG with real-time web search.
 - **Real-time Progress Updates**: WebSocket-based communication provides live updates on agent status and progress.
 - **Web Search Automation**: Real-time web searches using browser automation (Playwright).
 - **Stored Data Search**: Semantic search through stored content using PgVector and vector embeddings.
 - **AI Answer Generation**: Context-aware answers using advanced AI with Retrieval-Augmented Generation (RAG).
 - **Intelligent Storage**: Automatically vectorizes and stores search results for future learning.
+
+### Predefined Content Scraping (New in v3.1)
+- **Automated Content Scraping**: Scheduled scraping of hotels from Agoda and restaurants from Tabelog.
+- **Manual Scraping Triggers**: Admin endpoints for on-demand scraping operations.
+- **Content Browse Interface**: Dedicated UI for browsing and searching scraped content.
+- **Advanced Filtering**: Search by rating, location, price, cuisine type, and more.
+- **Real-time Statistics**: Live statistics dashboard showing scraped content metrics.
+
+### System Features
 - **Multi-Language Support**: Automatic detection and response in 60+ languages.
 - **Session Management**: Persistent context across user interactions.
 - **Clean Architecture**: Built with FastAPI, React, and modern technologies.
@@ -188,6 +198,47 @@ The final response is delivered via WebSocket, but the initial HTTP response wil
   "message": "Multi-agent search initiated. Connect to WebSocket for real-time updates."
 }
 ```
+
+### Predefined Content API Endpoints
+
+#### Search Hotels
+**GET** `/api/v1/predefined_content/hotels`
+
+Query parameters:
+- `search`: Text search in hotel name and address
+- `min_rating`: Minimum rating filter (0-5)
+- `max_rating`: Maximum rating filter (0-5)
+- `city`: Filter by city name
+- `source_name`: Filter by source website (e.g., 'agoda')
+- `min_price`: Minimum price per night
+- `max_price`: Maximum price per night
+- `page`: Page number (default: 1)
+- `size`: Page size (default: 20, max: 100)
+
+#### Search Restaurants
+**GET** `/api/v1/predefined_content/restaurants`
+
+Query parameters:
+- `search`: Text search in restaurant name and address
+- `min_rating`: Minimum rating filter (0-5)
+- `max_rating`: Maximum rating filter (0-5)
+- `city`: Filter by city name
+- `source_name`: Filter by source website (e.g., 'tabelog')
+- `cuisine_type`: Filter by cuisine type
+- `page`: Page number (default: 1)
+- `size`: Page size (default: 20, max: 100)
+
+#### Manual Scraping
+**POST** `/api/v1/predefined_content/scrape/{source_name}`
+
+Trigger manual scraping for a specific source (`agoda` or `tabelog`).
+
+#### Scraping Status
+**GET** `/api/v1/predefined_content/scraping/status`
+
+Get the current status of the scraping scheduler and jobs.
+
+For detailed API documentation, visit `/docs` when the server is running.
 
 ### Health Check
 

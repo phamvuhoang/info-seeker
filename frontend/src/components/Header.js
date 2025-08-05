@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Search, Brain, Database } from 'lucide-react';
+import { Search, Brain, Database, MapPin } from 'lucide-react';
 
 const Header = () => {
   const location = useLocation();
@@ -34,6 +34,17 @@ const Header = () => {
               >
                 <Search className="h-4 w-4 mr-2" />
                 Search
+              </Link>
+              <Link
+                to="/browse"
+                className={`flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  isActive('/browse')
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                }`}
+              >
+                <MapPin className="h-4 w-4 mr-2" />
+                Browse
               </Link>
               <Link
                 to="/database"

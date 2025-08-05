@@ -70,4 +70,106 @@ export const searchAPI = async (query, sessionId = null) => {
   }
 };
 
+// Predefined Content API functions
+
+export const searchHotels = async (filters = {}) => {
+  try {
+    const params = new URLSearchParams();
+
+    // Add filters to params
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== null && value !== undefined && value !== '') {
+        params.append(key, value);
+      }
+    });
+
+    const response = await api.get(`/api/v1/predefined_content/hotels?${params.toString()}`);
+    return response.data;
+  } catch (error) {
+    throw error;
+  }
+};
+
+export const searchRestaurants = async (filters = {}) => {
+  try {
+    const params = new URLSearchParams();
+
+    // Add filters to params
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== null && value !== undefined && value !== '') {
+        params.append(key, value);
+      }
+    });
+
+    const response = await api.get(`/api/v1/predefined_content/restaurants?${params.toString()}`);
+    return response.data;
+  } catch (error) {
+    throw error;
+  }
+};
+
+export const getHotel = async (hotelId) => {
+  try {
+    const response = await api.get(`/api/v1/predefined_content/hotels/${hotelId}`);
+    return response.data;
+  } catch (error) {
+    throw error;
+  }
+};
+
+export const getRestaurant = async (restaurantId) => {
+  try {
+    const response = await api.get(`/api/v1/predefined_content/restaurants/${restaurantId}`);
+    return response.data;
+  } catch (error) {
+    throw error;
+  }
+};
+
+export const getStatistics = async () => {
+  try {
+    const response = await api.get('/api/v1/predefined_content/statistics');
+    return response.data;
+  } catch (error) {
+    throw error;
+  }
+};
+
+export const triggerManualScraping = async (sourceName) => {
+  try {
+    const response = await api.post(`/api/v1/predefined_content/scrape/${sourceName}`);
+    return response.data;
+  } catch (error) {
+    throw error;
+  }
+};
+
+export const getScrapingStatus = async () => {
+  try {
+    const response = await api.get('/api/v1/predefined_content/scraping/status');
+    return response.data;
+  } catch (error) {
+    throw error;
+  }
+};
+
+export const addCustomSchedule = async (sourceName, cronExpression) => {
+  try {
+    const params = new URLSearchParams({ cron_expression: cronExpression });
+    const response = await api.post(`/api/v1/predefined_content/scraping/schedule/${sourceName}?${params.toString()}`);
+    return response.data;
+  } catch (error) {
+    throw error;
+  }
+};
+
+export const removeCustomSchedule = async (sourceName) => {
+  try {
+    const response = await api.delete(`/api/v1/predefined_content/scraping/schedule/${sourceName}`);
+    return response.data;
+  } catch (error) {
+    throw error;
+  }
+};
+
 export default api;

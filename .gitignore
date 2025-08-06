@@ -340,7 +340,7 @@ test-results.xml
 dump.rdb
 
 # PostgreSQL
-*.sql
+# *.sql
 !init-db.sql
 
 # SSL certificates

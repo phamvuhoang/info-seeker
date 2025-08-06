@@ -2,9 +2,9 @@ import asyncio
 import logging
 import re
 from typing import Dict, Any, List, Optional
-from urllib.parse import urljoin, urlparse, parse_qs
+from urllib.parse import urljoin, urlparse, parse_qs, urlencode
 import asyncpg
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from .base import BaseScraper
 from ..core.config import settings
 
@@ -18,15 +18,22 @@ class AgodaScraper(BaseScraper):
         super().__init__(config)
         self.connection_pool = None
         
-        # Agoda-specific search URLs for different Japanese cities
-        self.search_urls = [
-            # Tokyo hotels - using correct city ID for Tokyo
-            "https://www.agoda.com/search?city=4150&checkIn=2025-09-01&checkOut=2025-09-03&rooms=1&adults=2&children=0&cid=1844104",
-            # Osaka hotels - using correct city ID for Osaka
-            "https://www.agoda.com/search?city=4151&checkIn=2025-09-01&checkOut=2025-09-03&rooms=1&adults=2&children=0&cid=1844104",
-            # Kyoto hotels - using correct city ID for Kyoto
-            "https://www.agoda.com/search?city=4152&checkIn=2025-09-01&checkOut=2025-09-03&rooms=1&adults=2&children=0&cid=1844104",
-        ]
+        # Dynamic search configuration for Japanese hotels
+        self.search_config = {
+            'destinations': [
+                {'name': 'Tokyo', 'city_id': '4150'},
+                {'name': 'Osaka', 'city_id': '4151'},
+                {'name': 'Kyoto', 'city_id': '4152'},
+                {'name': 'Yokohama', 'city_id': '4153'},
+                {'name': 'Nagoya', 'city_id': '4154'},
+            ],
+            'check_in_days_ahead': 30,
+            'nights': 2,
+            'adults': 2,
+            'rooms': 1,
+            'max_pages': 3,  # Limit pages per destination
+            'min_rating': 4.0,
+        }
     
     async def get_connection(self):
         """Get database connection"""
@@ -38,80 +45,146 @@ class AgodaScraper(BaseScraper):
             self.connection_pool = await asyncpg.create_pool(db_url, min_size=1, max_size=10)
         
         return self.connection_pool.acquire()
-    
+
+    def build_search_url(self, destination: Dict[str, str], page: int = 1) -> str:
+        """Build dynamic search URL for a destination"""
+        check_in = datetime.now() + timedelta(days=self.search_config['check_in_days_ahead'])
+        check_out = check_in + timedelta(days=self.search_config['nights'])
+
+        params = {
+            'city': destination['city_id'],
+            'checkIn': check_in.strftime("%Y-%m-%d"),
+            'checkOut': check_out.strftime("%Y-%m-%d"),
+            'adults': self.search_config['adults'],
+            'rooms': self.search_config['rooms'],
+            'countryId': '153',  # Japan country ID
+            'page': page
+        }
+
+        base_url = "https://www.agoda.com/ja-jp/search"
+        return f"{base_url}?{urlencode(params)}"
+
     async def scrape_urls(self) -> List[str]:
-        """Get list of hotel URLs to scrape from search pages"""
+        """Get list of hotel URLs by scraping search results dynamically"""
         hotel_urls = []
-        
+
         try:
-            for search_url in self.search_urls:
-                logger.info(f"Scraping search page: {search_url}")
-                
-                # Navigate to search page
-                success = await self.navigate_with_retry(search_url)
-                if not success:
-                    logger.warning(f"Failed to navigate to search page: {search_url}")
-                    continue
-                
-                # Wait for search results to load
-                try:
-                    await self.page.wait_for_selector('[data-selenium="hotel-item"], .PropertyCard', timeout=15000)
-                except:
-                    logger.warning(f"No hotel items found on search page: {search_url}")
-                    continue
-                
-                # Extract hotel URLs from search results
-                page_urls = await self.extract_hotel_urls_from_search()
-                hotel_urls.extend(page_urls)
-                
-                logger.info(f"Found {len(page_urls)} hotel URLs on search page")
-                
-                # Add delay between search pages
-                await asyncio.sleep(2)
-        
+            for destination in self.search_config['destinations']:
+                logger.info(f"Scraping hotels in {destination['name']}")
+
+                for page in range(1, self.search_config['max_pages'] + 1):
+                    search_url = self.build_search_url(destination, page)
+                    logger.info(f"Scraping search page {page} for {destination['name']}: {search_url}")
+
+                    # Navigate to search page
+                    success = await self.navigate_with_retry(search_url)
+                    if not success:
+                        logger.warning(f"Failed to navigate to search page: {search_url}")
+                        continue
+
+                    # Wait for search results to load
+                    found_results = await self.wait_for_search_results()
+                    if not found_results:
+                        logger.warning(f"No hotel results found on page {page} for {destination['name']}")
+                        break  # No more results, stop pagination
+
+                    # Extract hotel URLs from current page
+                    page_urls = await self.extract_hotel_urls_from_search()
+                    hotel_urls.extend(page_urls)
+
+                    logger.info(f"Found {len(page_urls)} hotel URLs on page {page} for {destination['name']}")
+
+                    # Add delay between pages
+                    await asyncio.sleep(2)
+
         except Exception as e:
             logger.error(f"Error scraping hotel URLs: {e}")
-        
-        # Remove duplicates and limit to reasonable number
-        unique_urls = list(set(hotel_urls))[:50]  # Limit to 50 hotels for testing
+
+        # Remove duplicates and limit total results
+        unique_urls = list(set(hotel_urls))[:50]  # Limit to 50 hotels total
         logger.info(f"Total unique hotel URLs found: {len(unique_urls)}")
-        
+
         return unique_urls
-    
+
+    async def wait_for_search_results(self) -> bool:
+        """Wait for search results to load and return True if found"""
+        selectors_to_wait = [
+            '[data-selenium="hotel-item"]',
+            '.PropertyCard',
+            '[data-testid="property-card"]',
+            '.property-card',
+            'a[href*="/hotel/"]'
+        ]
+
+        for selector in selectors_to_wait:
+            try:
+                await self.page.wait_for_selector(selector, timeout=10000)
+                logger.info(f"Found search results with selector: {selector}")
+                return True
+            except:
+                continue
+
+        return False
+
     async def extract_hotel_urls_from_search(self) -> List[str]:
-        """Extract hotel URLs from search results page"""
+        """Extract hotel URLs from current search results page"""
         urls = []
-        
+
         try:
-            # Wait a bit for dynamic content
-            await asyncio.sleep(2)
-            
-            # Get all hotel links
-            hotel_links = await self.page.query_selector_all('a[data-selenium="hotel-item"], .PropertyCard a, .hotel-item a')
-            
-            for link in hotel_links:
+            # Wait for dynamic content to load
+            await asyncio.sleep(3)
+
+            # Try multiple selectors for hotel links
+            selectors = [
+                'a[data-selenium="hotel-item"]',
+                '.PropertyCard a[href*="/hotel/"]',
+                '.hotel-item a[href*="/hotel/"]',
+                'a[href*="/hotel/"]',
+                '[data-testid="property-card"] a',
+                '.property-card a'
+            ]
+
+            for selector in selectors:
                 try:
-                    href = await link.get_attribute('href')
-                    if href:
-                        # Convert relative URLs to absolute
-                        if href.startswith('/'):
-                            full_url = urljoin(self.base_url, href)
-                        else:
-                            full_url = href
-                        
-                        # Only include hotel detail pages
-                        if '/hotel/' in full_url or 'agoda.com' in full_url:
-                            urls.append(full_url)
-                            
+                    hotel_links = await self.page.query_selector_all(selector)
+                    logger.debug(f"Found {len(hotel_links)} links with selector: {selector}")
+
+                    for link in hotel_links:
+                        try:
+                            href = await link.get_attribute('href')
+                            if href and '/hotel/' in href:
+                                # Convert relative URLs to absolute
+                                if href.startswith('/'):
+                                    full_url = urljoin('https://www.agoda.com', href)
+                                else:
+                                    full_url = href
+
+                                # Ensure it's a valid Agoda hotel URL in Japan
+                                if ('agoda.com' in full_url and '/hotel/' in full_url and
+                                    ('-jp.html' in full_url or 'countryId=153' in full_url)):
+                                    urls.append(full_url)
+
+                        except Exception as e:
+                            logger.debug(f"Error extracting URL from link: {e}")
+                            continue
+
+                    # If we found URLs with this selector, break
+                    if urls:
+                        logger.info(f"Successfully found {len(urls)} URLs with selector: {selector}")
+                        break
+
                 except Exception as e:
-                    logger.debug(f"Error extracting URL from link: {e}")
+                    logger.debug(f"Selector {selector} failed: {e}")
                     continue
-        
+
+            # Remove duplicates
+            urls = list(set(urls))
+
         except Exception as e:
             logger.error(f"Error extracting hotel URLs from search page: {e}")
-        
+
         return urls
-    
+
     async def extract_data(self, url: str) -> Optional[Dict[str, Any]]:
         """Extract hotel data from a single hotel page"""
         try:

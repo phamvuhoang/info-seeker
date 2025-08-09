@@ -1,15 +1,23 @@
-from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Request
 from typing import Optional, List, Dict, Any
 import time
 import uuid
 import logging
-from ..models.search import SearchQuery, SearchResponse, SearchResult
+from ..models.search import (
+    SearchQuery, SearchResponse, SearchResult,
+    SiteSpecificSearchQuery, SiteSpecificSearchResponse, ProductResult,
+    SearchIntentResponse, EnhancedSearchResponse
+)
 from ..agents.search_agent import create_search_agent
 from ..agents.team_coordinator import create_search_team
 from ..agents.rag_agent import create_rag_agent
 from ..services.content_processor import ContentProcessor
 from ..services.database_service import database_service
 from ..services.vector_embedding_service import vector_embedding_service
+from ..services.search_intent_detector import search_intent_detector
+from ..services.jina_ai_client import jina_ai_client
+from ..services.site_config_service import site_config_service
+from ..services.rate_limiter import rate_limit_manager, error_handler
 from pydantic import BaseModel, Field
 
 # Configure logging
@@ -189,11 +197,13 @@ async def execute_hybrid_search(
         # Create search team
         search_team = create_search_team(session_id)
 
-        # Execute hybrid search
+        # Execute hybrid search (RAG + Web only)
         result = await search_team.execute_hybrid_search(
             query=query,
             include_rag=include_rag,
             include_web=include_web,
+            include_site_specific=False,  # Always False for hybrid search
+            target_sites=None,  # No target sites for hybrid search
             max_results=max_results
         )
 
@@ -202,6 +212,336 @@ async def execute_hybrid_search(
     except Exception as e:
         logger.error(f"Hybrid search failed for session {session_id}: {str(e)}")
         # Error will be broadcast by the search team
+
+
+@router.post("/search/site-specific", response_model=SiteSpecificSearchResponse)
+async def site_specific_search(request: SiteSpecificSearchQuery, http_request: Request):
+    """Enhanced site-specific search with detailed product results and pagination"""
+
+    try:
+        logger.info(f"Starting site-specific search: {request.query} on sites: {request.target_sites} (page {request.page})")
+
+        # Check rate limits
+        client_ip = http_request.client.host
+        api_rate_check = await rate_limit_manager.check_api_rate_limit(client_ip)
+        if not api_rate_check["allowed"]:
+            raise HTTPException(
+                status_code=429,
+                detail=api_rate_check["message"],
+                headers={"Retry-After": str(int(api_rate_check["wait_time"]))}
+            )
+
+        jina_rate_check = await rate_limit_manager.check_jina_rate_limit()
+        if not jina_rate_check["allowed"]:
+            raise HTTPException(
+                status_code=429,
+                detail=jina_rate_check["message"],
+                headers={"Retry-After": str(int(jina_rate_check["wait_time"]))}
+            )
+
+        # Validate target sites
+        try:
+            active_sites = await site_config_service.get_active_sites()
+            invalid_sites = [site for site in request.target_sites if site not in active_sites]
+
+            if invalid_sites:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid or inactive sites: {', '.join(invalid_sites)}"
+                )
+        except Exception as e:
+            error_info = error_handler.handle_site_config_error(e)
+            raise HTTPException(status_code=500, detail=error_info["user_message"])
+
+        # Perform site-specific search with enhanced results
+        start_time = time.time()
+        try:
+            # Calculate results per site based on pagination
+            results_per_site = max(request.per_page, 10)  # Get more results for better pagination
+
+            search_responses = await jina_ai_client.search_multiple_sites(
+                query=request.query,
+                site_keys=request.target_sites,
+                max_results_per_site=results_per_site
+            )
+        except Exception as e:
+            error_info = error_handler.handle_jina_api_error(e)
+            if error_info["retry_after"]:
+                raise HTTPException(
+                    status_code=503,
+                    detail=error_info["user_message"],
+                    headers={"Retry-After": str(error_info["retry_after"])}
+                )
+            else:
+                raise HTTPException(status_code=500, detail=error_info["user_message"])
+
+        # Process and enhance results
+        all_products = []
+        successful_sites = []
+        failed_sites = []
+        total_tokens = 0
+
+        for site_key, response in search_responses.items():
+            if response.success:
+                successful_sites.append(site_key)
+                total_tokens += response.total_tokens_used
+
+                site_config = active_sites.get(site_key)
+                site_name = site_config.site_name if site_config else site_key
+
+                for result in response.results:
+                    # Extract enhanced product information
+                    product = ProductResult(
+                        title=result.title or "No title",
+                        description=result.description or "",
+                        url=result.url or "",
+                        image_url=_extract_image_url(result.metadata, result.content),
+                        price=_extract_price(result.metadata, result.content),
+                        rating=_extract_rating(result.metadata, result.content),
+                        site_key=result.site_key,
+                        site_name=site_name,
+                        content=result.content[:500] + "..." if len(result.content) > 500 else result.content,
+                        metadata=result.metadata,
+                        tokens_used=result.tokens_used,
+                        relevance_score=_calculate_relevance_score(result, request.query)
+                    )
+                    all_products.append(product)
+            else:
+                failed_sites.append(site_key)
+                logger.error(f"Site search failed for {site_key}: {response.error_message}")
+
+        # Apply sorting
+        all_products = _sort_products(all_products, request.sort_by)
+
+        # Apply filtering
+        if request.filter_by_site:
+            all_products = [p for p in all_products if p.site_key == request.filter_by_site]
+
+        # Apply pagination
+        total_results = len(all_products)
+        start_idx = (request.page - 1) * request.per_page
+        end_idx = start_idx + request.per_page
+        paginated_products = all_products[start_idx:end_idx]
+
+        # Calculate pagination info
+        total_pages = (total_results + request.per_page - 1) // request.per_page
+        pagination = {
+            "current_page": request.page,
+            "per_page": request.per_page,
+            "total_pages": total_pages,
+            "total_results": total_results,
+            "has_next": request.page < total_pages,
+            "has_prev": request.page > 1,
+            "next_page": request.page + 1 if request.page < total_pages else None,
+            "prev_page": request.page - 1 if request.page > 1 else None
+        }
+
+        processing_time = time.time() - start_time
+
+        return SiteSpecificSearchResponse(
+            query=request.query,
+            results=paginated_products,
+            pagination=pagination,
+            sites_searched=successful_sites,
+            sites_failed=failed_sites,
+            total_results=total_results,
+            total_tokens_used=total_tokens,
+            processing_time=processing_time
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Site-specific search failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Site-specific search failed: {str(e)}")
+
+
+@router.post("/search/intent", response_model=SearchIntentResponse)
+async def analyze_search_intent(query: str = Query(..., description="Query to analyze")):
+    """Analyze search intent and get recommendations"""
+
+    try:
+        logger.info(f"Analyzing search intent for: {query}")
+
+        recommendations = await search_intent_detector.get_search_recommendations(query)
+
+        return SearchIntentResponse(
+            query=recommendations["query"],
+            detected_language=recommendations["detected_language"],
+            category=recommendations["category"],
+            recommendations=recommendations["recommendations"],
+            confidence=recommendations["confidence"],
+            reasoning=recommendations["reasoning"]
+        )
+
+    except Exception as e:
+        logger.error(f"Search intent analysis failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Intent analysis failed: {str(e)}")
+
+
+@router.get("/search/sites/active")
+async def get_active_sites():
+    """Get list of active sites available for site-specific search"""
+
+    try:
+        active_sites = await site_config_service.get_active_sites()
+
+        sites_info = []
+        for site_key, config in active_sites.items():
+            sites_info.append({
+                "site_key": site_key,
+                "site_name": config.site_name,
+                "site_url": config.site_url,
+                "category": config.category,
+                "language": config.language,
+                "country": config.country
+            })
+
+        return {
+            "active_sites": sites_info,
+            "total_count": len(sites_info)
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get active sites: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get active sites: {str(e)}")
+
+
+# Helper functions for product information extraction
+def _extract_image_url(metadata: Dict[str, Any], content: str) -> Optional[str]:
+    """Extract product image URL from metadata or content"""
+    # Check metadata first
+    if metadata:
+        for key in ['image_url', 'image', 'thumbnail', 'picture']:
+            if key in metadata and metadata[key]:
+                return str(metadata[key])
+
+    # Simple regex to find image URLs in content
+    import re
+    img_patterns = [
+        r'<img[^>]+src=["\']([^"\']+)["\']',
+        r'https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp)',
+    ]
+
+    for pattern in img_patterns:
+        matches = re.findall(pattern, content, re.IGNORECASE)
+        if matches:
+            return matches[0]
+
+    return None
+
+
+def _extract_price(metadata: Dict[str, Any], content: str) -> Optional[str]:
+    """Extract product price from metadata or content"""
+    # Check metadata first
+    if metadata:
+        for key in ['price', 'cost', 'amount', 'value']:
+            if key in metadata and metadata[key]:
+                return str(metadata[key])
+
+    # Simple regex to find price patterns in content
+    import re
+    price_patterns = [
+        r'¥[\d,]+',
+        r'￥[\d,]+',
+        r'\d+円',
+        r'価格[：:]\s*¥?[\d,]+',
+    ]
+
+    for pattern in price_patterns:
+        matches = re.findall(pattern, content)
+        if matches:
+            return matches[0]
+
+    return None
+
+
+def _extract_rating(metadata: Dict[str, Any], content: str) -> Optional[float]:
+    """Extract product rating from metadata or content"""
+    # Check metadata first
+    if metadata:
+        for key in ['rating', 'score', 'stars']:
+            if key in metadata and metadata[key]:
+                try:
+                    return float(metadata[key])
+                except (ValueError, TypeError):
+                    continue
+
+    # Simple regex to find rating patterns in content
+    import re
+    rating_patterns = [
+        r'評価[：:]\s*(\d+(?:\.\d+)?)',
+        r'★(\d+(?:\.\d+)?)',
+        r'(\d+(?:\.\d+)?)/5',
+        r'(\d+(?:\.\d+)?)点',
+    ]
+
+    for pattern in rating_patterns:
+        matches = re.findall(pattern, content)
+        if matches:
+            try:
+                return float(matches[0])
+            except (ValueError, TypeError):
+                continue
+
+    return None
+
+
+def _calculate_relevance_score(result, query: str) -> float:
+    """Calculate relevance score based on query match"""
+    if not query or not result.title:
+        return 0.5
+
+    query_lower = query.lower()
+    title_lower = result.title.lower()
+    description_lower = (result.description or "").lower()
+
+    score = 0.0
+
+    # Title exact match
+    if query_lower in title_lower:
+        score += 0.5
+
+    # Description match
+    if query_lower in description_lower:
+        score += 0.3
+
+    # Word overlap
+    query_words = set(query_lower.split())
+    title_words = set(title_lower.split())
+    description_words = set(description_lower.split())
+
+    title_overlap = len(query_words.intersection(title_words)) / max(len(query_words), 1)
+    description_overlap = len(query_words.intersection(description_words)) / max(len(query_words), 1)
+
+    score += title_overlap * 0.3
+    score += description_overlap * 0.2
+
+    return min(score, 1.0)
+
+
+def _sort_products(products: List[ProductResult], sort_by: str) -> List[ProductResult]:
+    """Sort products based on the specified criteria"""
+    if sort_by == "title":
+        return sorted(products, key=lambda p: p.title.lower())
+    elif sort_by == "site":
+        return sorted(products, key=lambda p: p.site_name.lower())
+    elif sort_by == "price":
+        # Sort by price (products with price first, then by price value)
+        def price_key(p):
+            if not p.price:
+                return (1, 0)  # No price goes to end
+            # Extract numeric value from price string
+            import re
+            numbers = re.findall(r'\d+', p.price.replace(',', ''))
+            if numbers:
+                return (0, int(numbers[0]))
+            return (1, 0)
+        return sorted(products, key=price_key)
+    elif sort_by == "rating":
+        return sorted(products, key=lambda p: p.rating or 0, reverse=True)
+    else:  # relevance (default)
+        return sorted(products, key=lambda p: p.relevance_score or 0, reverse=True)
 
 
 @router.get("/search/history/{session_id}")

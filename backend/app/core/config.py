@@ -15,7 +15,19 @@ class Settings(BaseSettings):
     
     # OpenAI Configuration
     openai_api_key: str
-    
+
+    # Jina AI Configuration
+    jina_api_key: Optional[str] = "jina_4e9b03600e24467fa5f57261f7d75f86Bbj64HxyV2wvYMZVYGYEi8qlJO1u"
+    jina_base_url: str = "https://s.jina.ai/"
+    jina_timeout: int = 30
+    jina_max_tokens_per_request: int = 20000
+    jina_rate_limit_per_minute: int = 60
+
+    # Site-specific search configuration
+    site_specific_search_enabled: bool = True
+    site_specific_max_results: int = 10
+    site_specific_timeout: int = 30
+
     # Database Configuration
     database_url: str = "postgresql+psycopg://infoseeker:infoseeker@localhost:5433/infoseeker"
     

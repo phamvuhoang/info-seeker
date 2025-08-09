@@ -3,7 +3,7 @@ from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 from agno.storage.redis import RedisStorage
 from agno.tools.reasoning import ReasoningTools
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import asyncio
 import time
 from datetime import datetime
@@ -12,10 +12,12 @@ from ..services.sse_manager import progress_manager
 from ..services.document_processor import document_processor  # For search result processing only
 from ..services.database_service import database_service
 from ..services.vector_embedding_service import vector_embedding_service
+from ..services.search_intent_detector import search_intent_detector
 from ..utils.performance_monitor import performance_monitor
 from ..utils.language_detector import language_detector
 from .rag_agent import create_rag_agent
 from .web_search_agent import create_web_search_agent
+from .site_specific_search_agent import create_site_specific_search_agent
 from .synthesis_agent import create_synthesis_agent
 from .validation_agent import create_validation_agent
 from .answer_agent import create_answer_agent
@@ -38,6 +40,7 @@ class MultiAgentSearchTeam:
         # Create specialized agents with shared storage
         self.rag_agent = create_rag_agent(session_id)
         self.web_agent = create_web_search_agent(session_id)
+        self.site_specific_agent = create_site_specific_search_agent(session_id)
         self.synthesis_agent = create_synthesis_agent(session_id)
         self.validation_agent = create_validation_agent(session_id)
         self.answer_agent = create_answer_agent(session_id)
@@ -149,6 +152,7 @@ class MultiAgentSearchTeam:
             members=[
                 self.rag_agent,
                 self.web_agent,
+                self.site_specific_agent,
                 self.synthesis_agent,
                 self.validation_agent,
                 self.answer_agent
@@ -156,8 +160,9 @@ class MultiAgentSearchTeam:
             instructions=[
                 "First, search the knowledge base for relevant stored information using the RAG Specialist.",
                 "Then, search the web for current information using the Web Search Specialist.",
-                "Next, synthesize information from both sources using the Information Synthesizer.",
-                "Then, validate the synthesized information using the Information Validator.",
+                "Next, perform site-specific search on relevant Japanese websites using the Site-Specific Search Specialist.",
+                "Then, synthesize information from all sources using the Information Synthesizer.",
+                "Next, validate the synthesized information using the Information Validator.",
                 "Finally, generate a comprehensive answer using the Answer Generator.",
                 "Each agent should complete their task before the next agent begins.",
                 "Provide source attribution and maintain accuracy throughout."
@@ -167,11 +172,15 @@ class MultiAgentSearchTeam:
             show_members_responses=True,
             markdown=True
         )
-    
+
+    # Removed execute_intelligent_search - hybrid search is now simplified to RAG + Web only
+
     async def execute_hybrid_search(self,
                                   query: str,
                                   include_rag: bool = True,
                                   include_web: bool = True,
+                                  include_site_specific: bool = False,
+                                  target_sites: Optional[List[str]] = None,
                                   max_results: int = 10) -> Dict[str, Any]:
         """Execute the multi-agent hybrid search workflow with optimized performance"""
 
@@ -202,49 +211,66 @@ class MultiAgentSearchTeam:
                 # Initialize search session
                 await self._initialize_search_session(query)
 
-                # Optimized parallel execution for RAG and Web search
-                if include_rag and include_web:
-                    await self._broadcast_progress("Search Orchestrator", "started",
-                                                 "Running RAG and Web search in parallel...")
+                # Initialize results
+                rag_result = None
+                web_result = None
 
-                    # Run RAG and Web search concurrently for better performance
+                # Create tasks for enabled search types
+                tasks = []
+                task_names = []
+
+                if include_rag:
                     rag_task = asyncio.create_task(self._run_agent_with_progress(
                         self.rag_agent, query, "RAG Specialist"))
+                    tasks.append(rag_task)
+                    task_names.append("RAG")
+
+                if include_web:
                     web_task = asyncio.create_task(self._run_agent_with_progress(
                         self.web_agent, query, "Web Search Specialist"))
+                    tasks.append(web_task)
+                    task_names.append("Web")
 
-                    # Wait for both to complete
-                    rag_result, web_result = await asyncio.gather(rag_task, web_task, return_exceptions=True)
+                # Site-specific search removed from hybrid search
 
-                    # Handle exceptions with better error categorization
-                    if isinstance(rag_result, Exception):
-                        await self._broadcast_progress("RAG Specialist", "failed", f"RAG search failed: {str(rag_result)}")
-                        rag_result = None
-                    if isinstance(web_result, Exception):
-                        error_msg = str(web_result)
-                        if "Ratelimit" in error_msg or "rate limit" in error_msg.lower():
-                            await self._broadcast_progress("Web Search Specialist", "rate_limited", "Web search temporarily rate limited - using available sources")
-                            logger.warning(f"Web search rate limited: {error_msg}")
-                        else:
-                            await self._broadcast_progress("Web Search Specialist", "failed", f"Web search failed: {error_msg}")
-                            logger.error(f"Web search failed: {error_msg}")
-                        web_result = None
+                # Execute enabled searches
+                if tasks:
+                    search_types = " and ".join(task_names)
+                    await self._broadcast_progress("Search Orchestrator", "started",
+                                                 f"Running {search_types} search in parallel...")
 
-                    # Combine results for synthesis
-                    combined_context = self._combine_search_results(rag_result, web_result, query)
+                    # Wait for all enabled searches to complete
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
 
+                    # Assign results back to appropriate variables
+                    result_index = 0
+                    if include_rag:
+                        rag_result = results[result_index] if not isinstance(results[result_index], Exception) else None
+                        if isinstance(results[result_index], Exception):
+                            await self._broadcast_progress("RAG Specialist", "failed", f"RAG search failed: {str(results[result_index])}")
+                        result_index += 1
+
+                    if include_web:
+                        web_result = results[result_index] if not isinstance(results[result_index], Exception) else None
+                        if isinstance(results[result_index], Exception):
+                            error_msg = str(results[result_index])
+                            if "Ratelimit" in error_msg or "rate limit" in error_msg.lower():
+                                await self._broadcast_progress("Web Search Specialist", "rate_limited", "Web search temporarily rate limited - using available sources")
+                                logger.warning(f"Web search rate limited: {error_msg}")
+                            else:
+                                await self._broadcast_progress("Web Search Specialist", "failed", f"Web search failed: {error_msg}")
+                                logger.error(f"Web search failed: {error_msg}")
+                        result_index += 1
+
+                    # Site-specific search removed from hybrid search
+
+                # Handle legacy single search type cases
                 elif include_rag:
                     await self._broadcast_progress("Search Orchestrator", "started", "Running RAG search only...")
                     rag_result = await self._run_agent_with_progress(self.rag_agent, query, "RAG Specialist")
-                    combined_context = self._combine_search_results(rag_result, None, query)
 
-                elif include_web:
-                    await self._broadcast_progress("Search Orchestrator", "started", "Running Web search only...")
-                    web_result = await self._run_agent_with_progress(self.web_agent, query, "Web Search Specialist")
-                    combined_context = self._combine_search_results(None, web_result, query)
-
-                else:
-                    combined_context = f"Query: {query}\n\nNo search sources enabled."
+                # Combine results for synthesis
+                combined_context = self._combine_search_results(rag_result, web_result, query)
 
                 # Extract sources first (needed for validation)
                 logger.info(f"DEBUG: Extracting sources from results - RAG: {rag_result is not None}, Web: {web_result is not None}")
@@ -484,6 +510,67 @@ class MultiAgentSearchTeam:
                     "timestamp": datetime.now().isoformat()
                 }
             )
+
+    async def _run_site_specific_search(self, query: str, target_sites: Optional[List[str]] = None):
+        """Run site-specific search using the site-specific search agent"""
+        try:
+            await self._broadcast_progress("Site-Specific Search Specialist", "started",
+                                         f"Searching specific sites for: {query[:50]}...")
+
+            # Use the agent's search method directly
+            result = await self.site_specific_agent.search_and_process(query, target_sites)
+
+            if result.get('success'):
+                await self._broadcast_progress("Site-Specific Search Specialist", "completed",
+                                             f"Found {len(result.get('results', []))} results from site-specific search")
+
+                # Create a mock agent response object for consistency
+                class MockAgentResponse:
+                    def __init__(self, content):
+                        self.content = content
+
+                # Format the results into content
+                formatted_content = self._format_site_specific_results(result)
+                return MockAgentResponse(formatted_content)
+            else:
+                await self._broadcast_progress("Site-Specific Search Specialist", "failed",
+                                             result.get('message', 'Site-specific search failed'))
+                return None
+
+        except Exception as e:
+            logger.error(f"Site-specific search error: {e}")
+            await self._broadcast_progress("Site-Specific Search Specialist", "error",
+                                         f"Site-specific search error: {str(e)}")
+            return None
+
+    def _format_site_specific_results(self, result: Dict[str, Any]) -> str:
+        """Format site-specific search results for synthesis"""
+        if not result.get('success') or not result.get('results'):
+            return "No site-specific results found."
+
+        formatted_parts = []
+        results = result.get('results', [])
+
+        for i, item in enumerate(results, 1):
+            formatted_parts.append(f"""
+Site-Specific Result {i} (from {item.get('site', 'unknown')}):
+Title: {item.get('title', 'No title')}
+URL: {item.get('url', 'No URL')}
+Description: {item.get('description', 'No description')}
+Content: {item.get('content', 'No content')[:300]}...
+---""")
+
+        # Add summary information
+        sites_searched = result.get('sites_searched', [])
+        sites_failed = result.get('sites_failed', [])
+
+        summary = f"\nSite-Specific Search Summary:\n"
+        summary += f"- Results found: {len(results)}\n"
+        summary += f"- Sites successfully searched: {', '.join(sites_searched) if sites_searched else 'None'}\n"
+        summary += f"- Sites failed: {', '.join(sites_failed) if sites_failed else 'None'}\n"
+        summary += f"- Search time: {result.get('search_time', 0):.2f}s\n"
+
+        return summary + "\n".join(formatted_parts)
 
     def _combine_search_results(self, rag_result, web_result, query: str) -> str:
         """Combine RAG and web search results into a coherent context"""

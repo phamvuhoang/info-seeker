@@ -293,6 +293,36 @@ class DatabaseService:
             logger.error(f"Error getting search history for session {session_id}: {e}")
             return []
 
+    async def fetch_all(self, query: str, *args) -> List[Dict[str, Any]]:
+        """Execute a query and return all results as a list of dictionaries"""
+        try:
+            async with await self.get_connection() as conn:
+                rows = await conn.fetch(query, *args)
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Error executing query: {e}")
+            return []
+
+    async def fetch_one(self, query: str, *args) -> Optional[Dict[str, Any]]:
+        """Execute a query and return the first result as a dictionary"""
+        try:
+            async with await self.get_connection() as conn:
+                row = await conn.fetchrow(query, *args)
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error executing query: {e}")
+            return None
+
+    async def execute_query(self, query: str, *args) -> bool:
+        """Execute a query without returning results (for INSERT, UPDATE, DELETE)"""
+        try:
+            async with await self.get_connection() as conn:
+                await conn.execute(query, *args)
+                return True
+        except Exception as e:
+            logger.error(f"Error executing query: {e}")
+            return False
+
 
 # Global instance
 database_service = DatabaseService()

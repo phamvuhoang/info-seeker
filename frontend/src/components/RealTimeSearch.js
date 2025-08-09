@@ -10,6 +10,7 @@ import {
 } from '../services/websocket';
 import { Search, Loader2, AlertCircle, CheckCircle, Clock, ChevronDown, ChevronUp, Maximize2, Minimize2, Brain } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import EnhancedResultsList from './EnhancedResultCard';
 
 const RealTimeSearch = () => {
   const [query, setQuery] = useState('');
@@ -24,6 +25,11 @@ const RealTimeSearch = () => {
   const [searchStartTime, setSearchStartTime] = useState(null);
   const [expandedAgents, setExpandedAgents] = useState(new Set());
   const [autoScroll, setAutoScroll] = useState(true);
+  const [searchConfig, setSearchConfig] = useState({
+    includeRag: true,
+    includeWeb: true,
+    maxResults: 10
+  });
   const wsRef = useRef(null);
   const agentProgressRef = useRef(null);
   const reasoningStepsRef = useRef(null);
@@ -153,7 +159,7 @@ const RealTimeSearch = () => {
     );
     wsRef.current.connect();
 
-    // Start search
+    // Start search with configuration
     try {
       const response = await fetch('/api/v1/search/hybrid', {
         method: 'POST',
@@ -163,9 +169,9 @@ const RealTimeSearch = () => {
         body: JSON.stringify({
           query,
           session_id: sessionId,
-          include_web: true,
-          include_rag: true,
-          max_results: 10
+          include_web: searchConfig.includeWeb,
+          include_rag: searchConfig.includeRag,
+          max_results: searchConfig.maxResults
         }),
       });
 
@@ -227,6 +233,7 @@ const RealTimeSearch = () => {
               <div className="text-sm font-medium text-green-900">Web Specialist</div>
               <div className="text-xs text-green-700">Real-time Search</div>
             </div>
+            {/* Site-Specific agent removed - now in separate tab */}
             <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-4 rounded-lg border border-purple-200">
               <div className="w-8 h-8 bg-purple-500 rounded-full flex items-center justify-center mx-auto mb-2">
                 <Brain className="w-4 h-4 text-white" />
@@ -283,6 +290,47 @@ const RealTimeSearch = () => {
                 </>
               )}
             </button>
+          </div>
+
+          {/* Simple Search Configuration */}
+          <div className="mt-6 bg-white border border-gray-200 rounded-lg shadow-sm p-4">
+            <h3 className="text-sm font-medium text-gray-900 mb-3">Search Configuration</h3>
+            <div className="flex flex-wrap gap-4">
+              <label className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  checked={searchConfig.includeRag}
+                  onChange={(e) => setSearchConfig(prev => ({ ...prev, includeRag: e.target.checked }))}
+                  disabled={isSearching}
+                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-700">Knowledge Base (RAG)</span>
+              </label>
+              <label className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  checked={searchConfig.includeWeb}
+                  onChange={(e) => setSearchConfig(prev => ({ ...prev, includeWeb: e.target.checked }))}
+                  disabled={isSearching}
+                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-700">Web Search (DuckDuckGo)</span>
+              </label>
+              <div className="flex items-center space-x-2">
+                <label className="text-sm text-gray-700">Max Results:</label>
+                <select
+                  value={searchConfig.maxResults}
+                  onChange={(e) => setSearchConfig(prev => ({ ...prev, maxResults: parseInt(e.target.value) }))}
+                  disabled={isSearching}
+                  className="px-2 py-1 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value={5}>5</option>
+                  <option value={10}>10</option>
+                  <option value={15}>15</option>
+                  <option value={20}>20</option>
+                </select>
+              </div>
+            </div>
           </div>
 
           {/* Example Queries */}
@@ -640,70 +688,10 @@ const RealTimeSearch = () => {
         </div>
       )}
 
-      {/* Sources */}
+      {/* Enhanced Results */}
       {sources.length > 0 && (
         <div className="mb-8">
-          <h3 className="text-lg font-semibold mb-4">Sources ({sources.length})</h3>
-          <div className="grid gap-4">
-            {sources.map((source, index) => (
-              <div key={index} className="p-4 bg-gray-50 rounded-lg border">
-                <div className="font-medium text-gray-900 mb-1">{source.title}</div>
-
-                {/* Content preview */}
-                {source.content && (
-                  <p className="text-gray-700 text-sm mb-2 leading-relaxed">
-                    {source.content}
-                  </p>
-                )}
-
-                {/* URL for web sources */}
-                {source.url && source.source_type !== 'knowledge_base' && (
-                  <a
-                    href={source.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-600 hover:text-blue-800 text-sm break-all block mb-2"
-                  >
-                    {source.url}
-                  </a>
-                )}
-
-                {/* Additional info for DB sources */}
-                {source.source_type === 'knowledge_base' && (
-                  <div className="text-xs text-gray-500 mb-2">
-                    {source.source && <span>Source: {source.source}</span>}
-                    {source.document_id && <span className="ml-2">ID: {source.document_id.substring(0, 8)}...</span>}
-                  </div>
-                )}
-
-                <div className="flex items-center gap-4 mt-2 text-sm text-gray-600">
-                  {source.relevance_score && (
-                    <span>Relevance: {(source.relevance_score * 100).toFixed(1)}%</span>
-                  )}
-                  {source.similarity_score && (
-                    <span>Similarity: {(source.similarity_score * 100).toFixed(1)}%</span>
-                  )}
-                  {source.source_type && (
-                    <span className={`px-2 py-1 rounded text-xs ${
-                      source.source_type === 'knowledge_base'
-                        ? 'bg-green-100 text-green-800'
-                        : source.source_type === 'web_search'
-                        ? 'bg-blue-100 text-blue-800'
-                        : 'bg-gray-200 text-gray-800'
-                    }`}>
-                      {source.source_type === 'knowledge_base'
-                        ? 'Source from DB'
-                        : source.source_type === 'web_search'
-                        ? 'Source from search'
-                        : source.source_type === 'extracted'
-                        ? 'Source from search'
-                        : source.source_type}
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
+          <EnhancedResultsList results={sources} title="Search Results" />
         </div>
       )}
 

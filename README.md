@@ -6,8 +6,10 @@ InfoSeeker is an open-source AI-powered search platform designed to deliver junk
 
 ### Core Search Capabilities
 - **Multi-Agent Hybrid Search**: A team of specialized AI agents collaborates to combine vector-based RAG with real-time web search.
+- **Dual Search Interface**: Main Search (RAG + DuckDuckGo) and Target Sites Search (Japanese E-commerce)
 - **Real-time Progress Updates**: WebSocket-based communication provides live updates on agent status and progress.
 - **Web Search Automation**: Real-time web searches using browser automation (Playwright).
+- **Target Sites Search**: Dedicated search for Japanese e-commerce sites with detailed product results
 - **Stored Data Search**: Semantic search through stored content using PgVector and vector embeddings.
 - **AI Answer Generation**: Context-aware answers using advanced AI with Retrieval-Augmented Generation (RAG).
 - **Intelligent Storage**: Automatically vectorizes and stores search results for future learning.
@@ -40,10 +42,20 @@ InfoSeeker is an open-source AI-powered search platform designed to deliver junk
 ┌─────────────────────────▼───────────────────────────────────────────────────┐
 │                    Multi-Agent Search Team                                  │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────┐│
-│  │ RAG Agent   │ │ Web Agent   │ │ Synthesis   │ │ Validation  │ │ Answer  ││
-│  │ (Vector     │ │ (Playwright │ │ Agent       │ │ Agent       │ │ Agent   ││
-│  │ Search)     │ │ Search)     │ │ (Combine)   │ │ (Verify)    │ │ (Final) ││
+│  │ RAG Agent   │ │ Web Agent   │ │Site-Specific│ │ Synthesis   │ │Validation││
+│  │ (Vector     │ │ (DuckDuckGo │ │   Agent     │ │ Agent       │ │ Agent   ││
+│  │ Search)     │ │ Playwright) │ │ (Jina AI)   │ │ (Combine)   │ │ (Verify)││
 │  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘ └─────────┘│
+│                                         │                                   │
+│                                         ▼                                   │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │                Target Sites (Japanese E-commerce)                       ││
+│  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐                       ││
+│  │  │otoriyose.net│ │ippin.gnavi  │ │gurusuguri   │                       ││
+│  │  │   (Gourmet) │ │  .co.jp     │ │  .com       │                       ││
+│  │  │             │ │   (Bread)   │ │ (Premium)   │                       ││
+│  │  └─────────────┘ └─────────────┘ └─────────────┘                       ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
 └─────────────────────────┬───────────────────────────────────────────────────┘
                           │
 ┌─────────────────────────▼───────────────────────────────────────────────────┐
@@ -61,6 +73,32 @@ InfoSeeker is an open-source AI-powered search platform designed to deliver junk
 - **Cache**: Redis for session management
 - **AI**: OpenAI GPT-4 for answer generation
 - **Web Automation**: Playwright for web scraping
+
+## ✅ Current Implementation Status
+
+### Completed Features
+- **Multi-Agent Search System**: Fully implemented with 5 specialized agents (RAG, Web Search, Synthesis, Validation, Answer)
+- **Real-Time Updates**: Server-Sent Events (SSE) for live search progress tracking
+- **Hybrid Search API**: `/api/v1/search/hybrid` endpoint with background task execution
+- **RAG Similarity Search**: Vector-based search using Qdrant/PgVector integration
+- **Database Management**: Complete CRUD operations with migration system
+- **Predefined Content Scraping**: Automated scraping for Agoda hotels and Tabelog restaurants
+- **Frontend Interface**: React-based UI with real-time search and database browsing
+- **Session Management**: Persistent search history and user feedback collection
+
+### Architecture Components
+- **FastAPI Backend**: Async web framework with comprehensive API endpoints
+- **Agno Multi-Agent Framework**: Coordinated team of AI agents with shared storage
+- **PostgreSQL Database**: Primary storage with automated migrations (9 migration files)
+- **Redis Cache**: Session management and agent coordination
+- **Scraping Engine**: Extensible framework with scheduler service
+- **Performance Monitoring**: Comprehensive logging and performance tracking
+
+### API Endpoints Available
+- Search: `/api/v1/search/*` (basic, hybrid, RAG, history, feedback)
+- Database: `/api/v1/database/*` (tables, queries, data viewing)
+- Predefined Content: `/api/v1/predefined_content/*` (hotels, restaurants, scraping)
+- Real-time: `/sse/{session_id}` (Server-Sent Events)
 
 ## 📋 Prerequisites
 

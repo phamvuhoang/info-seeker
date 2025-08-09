@@ -70,6 +70,65 @@ export const searchAPI = async (query, sessionId = null) => {
   }
 };
 
+// Simplified hybrid search (RAG + Web only)
+export const hybridSearchAPI = async (searchConfig) => {
+  try {
+    const payload = {
+      query: searchConfig.query,
+      session_id: searchConfig.sessionId,
+      include_web: searchConfig.includeWeb ?? true,
+      include_rag: searchConfig.includeRag ?? true,
+      max_results: searchConfig.maxResults ?? 10
+    };
+
+    const response = await api.post('/api/v1/search/hybrid', payload);
+    return response.data;
+  } catch (error) {
+    throw error;
+  }
+};
+
+// Enhanced site-specific search with pagination
+export const siteSpecificSearchAPI = async (searchParams) => {
+  try {
+    const payload = {
+      query: searchParams.query,
+      target_sites: searchParams.targetSites,
+      page: searchParams.page || 1,
+      per_page: searchParams.perPage || 10,
+      sort_by: searchParams.sortBy || 'relevance',
+      filter_by_site: searchParams.filterBySite || null
+    };
+
+    const response = await api.post('/api/v1/search/site-specific', payload);
+    return response.data;
+  } catch (error) {
+    throw error;
+  }
+};
+
+// Search intent analysis
+export const analyzeSearchIntentAPI = async (query) => {
+  try {
+    const response = await api.post('/api/v1/search/intent', null, {
+      params: { query }
+    });
+    return response.data;
+  } catch (error) {
+    throw error;
+  }
+};
+
+// Get active sites for site-specific search
+export const getActiveSitesAPI = async () => {
+  try {
+    const response = await api.get('/api/v1/search/sites/active');
+    return response.data;
+  } catch (error) {
+    throw error;
+  }
+};
+
 // Predefined Content API functions
 
 export const searchHotels = async (filters = {}) => {
